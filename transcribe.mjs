@@ -9,6 +9,7 @@ import { stdin as input, stdout as output } from 'process';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const OUTPUT_DIR = './output';
+const NOMENCLATURE_PATH = './nomenclature.txt';
 
 function startSpinner(message) {
   const spinnerChars = ['|', '/', '-', '\\'];
@@ -35,31 +36,15 @@ function isGenericSummary(summary) {
   return genericWords.some(word => lower.includes(word));
 }
 
-async function getDescriptiveSummary(markdown, transcript) {
-  const prompt = `Here is a voice memo transcription and its markdown summary. Please provide a 5-word-or-less descriptive summary for this content, suitable for a filename. Do not include generic words like 'Voice Memo Summary'. Only return the phrase.\n\nTranscription:\n${transcript}\n\nMarkdown Summary:\n${markdown}`;
-  const spinnerStop = startSpinner('Getting short summary from Claude...');
+function getNomenclatureNote() {
+  let terms = '';
   try {
-    const response = await axios.post('https://api.anthropic.com/v1/messages', {
-      model: 'claude-3-7-sonnet-20250219',
-      max_tokens: 20,
-      messages: [
-        { role: 'user', content: prompt }
-      ]
-    }, {
-      headers: {
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
-      }
-    });
-    spinnerStop();
-    const text = response.data.content?.[0]?.text || response.data.completion || '';
-    return sanitizeFilename(text.trim());
-  } catch (err) {
-    spinnerStop();
-    console.error('Error getting descriptive summary from Claude:', err.response?.data || err.message);
+    terms = fs.readFileSync(NOMENCLATURE_PATH, 'utf8').trim();
+  } catch {
     return '';
   }
+  if (!terms) return '';
+  return `\n\n---\nThe following is a list of terms, product names, or jargon that may appear in the transcript. Please use this list to help interpret, spell, or summarize the content accurately.\n\n${terms}\n---\n`;
 }
 
 async function sendToClaude(transcript, m4aFilePath) {
@@ -67,7 +52,8 @@ async function sendToClaude(transcript, m4aFilePath) {
     console.error('ANTHROPIC_API_KEY not set.');
     return;
   }
-  const prompt = `Here is a voice memo transcription. Please summarize or process as appropriate.\n\n${transcript}`;
+  const nomenclatureNote = getNomenclatureNote();
+  const prompt = `Here is the voice memo transcription. Please create a summary of no more than 6 words at the top, formatted as 'Summary: [your summary]'. Then, provide a more in-depth summarization including bullet points, and finally, end with any action items.${nomenclatureNote}\n\n${transcript}`;
   const spinnerStop = startSpinner('Sending to Claude...');
   let claudeText = '';
   try {
@@ -92,44 +78,50 @@ async function sendToClaude(transcript, m4aFilePath) {
     return;
   }
 
-  // Extract summary field from Claude output (first line, e.g., '# Voice Memo Summary: ...')
-  let summary = '';
-  const match = claudeText.match(/^#\s*[^:]+:([^\n]*)/i);
-  if (match && match[1]) {
-    summary = sanitizeFilename(match[1].trim());
-  } else {
-    // Try fallback: first non-empty line
-    const lines = claudeText.split('\n').filter(Boolean);
-    if (lines.length) summary = sanitizeFilename(lines[0].replace(/^#+\s*/, ''));
+  // Extract the date and time from the original audio filename (assumes format: YYYYMMDD HHMMSS-xxxx.m4a)
+  const base = path.basename(m4aFilePath).replace(/\.[^.]+$/, '');
+  const dateTimeMatch = base.match(/(\d{8})[ _](\d{6})/);
+  let prefix = '';
+  if (dateTimeMatch) {
+    const date = dateTimeMatch[1];
+    const timeRaw = dateTimeMatch[2];
+    const time = `${timeRaw.substring(0,2)}:${timeRaw.substring(2,4)}:${timeRaw.substring(4,6)}`; // military format
+    prefix = `${date}_${time}_`;
   }
 
-  // If summary is missing or generic, get a better one from Claude
-  if (!summary || isGenericSummary(summary)) {
-    const betterSummary = await getDescriptiveSummary(claudeText, transcript);
-    if (betterSummary && !isGenericSummary(betterSummary)) {
-      summary = betterSummary;
-    } else {
-      // Still generic, use timestamp from audio file for uniqueness
-      const base = path.basename(m4aFilePath).replace(/\.[^.]+$/, '');
-      summary = `memo_${base}`;
+  // Extract the summary after 'Summary:' (with or without brackets)
+  let summary = '';
+  let summaryMatch = claudeText.match(/Summary:\s*\[([^\]]+)\]/i);
+  if (summaryMatch && summaryMatch[1]) {
+    summary = sanitizeFilename(summaryMatch[1].trim());
+  } else {
+    summaryMatch = claudeText.match(/Summary:\s*([^\n]+)/i);
+    if (summaryMatch && summaryMatch[1]) {
+      summary = sanitizeFilename(summaryMatch[1].trim());
     }
   }
-  if (!summary) summary = 'voice_memo';
+  if (!summary) {
+    summary = `memo_${base}`;
+  }
+  const finalName = prefix + summary;
 
   // Ensure output directory exists
   if (!fs.existsSync(OUTPUT_DIR)) {
     fs.mkdirSync(OUTPUT_DIR);
   }
 
-  // Write markdown file
-  const mdFile = path.join(OUTPUT_DIR, `${summary}.md`);
-  fs.writeFileSync(mdFile, claudeText);
+  // Append the original m4a filename to the summary markdown
+  const origM4AName = path.basename(m4aFilePath);
+  const mdFile = path.join(OUTPUT_DIR, `${finalName}.md`);
+  // Add a blank line before the filename for readability
+  fs.writeFileSync(mdFile, claudeText.trim() + `\n\nOriginal audio file: ${origM4AName}\n`);
   console.log(`Claude output written to ${mdFile}`);
 
   // Copy m4a file
-  const m4aDest = path.join(OUTPUT_DIR, `${summary}.m4a`);
+  const m4aDest = path.join(OUTPUT_DIR, `${finalName}.m4a`);
   fs.copyFileSync(m4aFilePath, m4aDest);
   console.log(`Voice memo audio copied to ${m4aDest}`);
+
 }
 
 async function transcribeLatestVoiceMemo() {
