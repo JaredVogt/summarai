@@ -178,10 +178,15 @@ async function sendToClaude(transcript, m4aFilePath, recordingDateTimePrefix, re
   const targetDir = getSingleTargetDir(keywordsInSummary);
   if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
   const mdFile = path.join(targetDir, `${finalName}.md`);
+  const homeDir = process.env.HOME || process.env.USERPROFILE;
+  let displayAudioPath = m4aFilePath;
+  if (homeDir && m4aFilePath.startsWith(homeDir)) {
+    displayAudioPath = m4aFilePath.replace(homeDir, '~');
+  }
   fs.writeFileSync(
     mdFile,
     claudeText.trim() +
-    `\n\nOriginal audio file: "${m4aFilePath}"\nRecording date/time: ${recordingDateTime}\n` +
+    `\n\nOriginal audio file: "${displayAudioPath}"\nRecording date/time: ${recordingDateTime}\n` +
     `\n# Transcription\n\n${transcript}\n`
   );
   const m4aDest = path.join(targetDir, `${finalName}.m4a`);
