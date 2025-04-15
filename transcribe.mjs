@@ -2,9 +2,16 @@ import axios from 'axios';
 import FormData from 'form-data';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { getLatestVoiceMemos } from './getLatestVoiceMemo.mjs';
 import readline from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
+import { exec as execCb } from 'child_process';
+import { promisify } from 'util';
+const exec = promisify(execCb);
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -47,13 +54,55 @@ function getNomenclatureNote() {
   return `\n\n---\nThe following is a list of terms, product names, or jargon that may appear in the transcript. Please use this list to help interpret, spell, or summarize the content accurately.\n\n${terms}\n---\n`;
 }
 
-async function sendToClaude(transcript, m4aFilePath) {
+function getInstructionsNote() {
+  let instructions = '';
+  try {
+    instructions = fs.readFileSync(path.join(__dirname, 'instructions.md'), 'utf8').trim();
+    if (instructions) {
+      instructions = 'The following are additional instructions to guide your response:\n' + instructions + '\n';
+    }
+  } catch (e) {
+    // If instructions.md does not exist, skip
+  }
+  return instructions;
+}
+
+function extractKeywords(claudeText) {
+  const match = claudeText.match(/^Keywords:\s*\[([^\]]+)\]/m);
+  if (match && match[1]) {
+    return match[1].split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
+  }
+  return [];
+}
+
+function getOutputKeywords() {
+  try {
+    return fs.readFileSync(path.join(__dirname, 'keywords.txt'), 'utf8')
+      .split(/\r?\n/)
+      .map(k => k.trim().toLowerCase())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function getSingleTargetDir(keywordsInSummary) {
+  const outputKeywords = getOutputKeywords();
+  const matchedKeyword = outputKeywords.find(k => keywordsInSummary.includes(k));
+  if (matchedKeyword) {
+    return path.join(OUTPUT_DIR, matchedKeyword);
+  }
+  return OUTPUT_DIR;
+}
+
+async function sendToClaude(transcript, m4aFilePath, recordingDateTimePrefix, recordingDateTime) {
   if (!ANTHROPIC_API_KEY) {
     console.error('ANTHROPIC_API_KEY not set.');
     return;
   }
   const nomenclatureNote = getNomenclatureNote();
-  const prompt = `Here is the voice memo transcription. Please create a summary of no more than 6 words at the top, formatted as 'Summary: [your summary]'. Then, provide a more in-depth summarization including bullet points, and finally, end with any action items.${nomenclatureNote}\n\n${transcript}`;
+  const instructionsNote = getInstructionsNote();
+  const prompt = `${instructionsNote}${nomenclatureNote}Here is the voice memo transcription:\n${transcript}`;
   const spinnerStop = startSpinner('Sending to Claude...');
   let claudeText = '';
   try {
@@ -78,17 +127,6 @@ async function sendToClaude(transcript, m4aFilePath) {
     return;
   }
 
-  // Extract the date and time from the original audio filename (assumes format: YYYYMMDD HHMMSS-xxxx.m4a)
-  const base = path.basename(m4aFilePath).replace(/\.[^.]+$/, '');
-  const dateTimeMatch = base.match(/(\d{8})[ _](\d{6})/);
-  let prefix = '';
-  if (dateTimeMatch) {
-    const date = dateTimeMatch[1];
-    const timeRaw = dateTimeMatch[2];
-    const time = `${timeRaw.substring(0,2)}:${timeRaw.substring(2,4)}:${timeRaw.substring(4,6)}`; // military format
-    prefix = `${date}_${time}_`;
-  }
-
   // Extract the summary after 'Summary:' (with or without brackets)
   let summary = '';
   let summaryMatch = claudeText.match(/Summary:\s*\[([^\]]+)\]/i);
@@ -101,27 +139,71 @@ async function sendToClaude(transcript, m4aFilePath) {
     }
   }
   if (!summary) {
-    summary = `memo_${base}`;
+    summary = `memo_${path.basename(m4aFilePath).replace(/\.[^.]+$/, '')}`;
   }
-  const finalName = prefix + summary;
+
+  // Check for existing files with the same date and time prefix, and increment version if needed
+  let versionSuffix = '';
+  const outputFiles = fs.readdirSync(OUTPUT_DIR);
+  // Only match files with the same date and time prefix, regardless of summary
+  const prefixPattern = new RegExp(`^${recordingDateTimePrefix.replace(/([.*+?^=!:${}()|[\]\/\\])/g, '\\$1')}`);
+  const samePrefixFiles = outputFiles.filter(f => prefixPattern.test(f));
+  if (samePrefixFiles.length > 0) {
+    // Find the highest _vN suffix used for any file with this prefix
+    let maxVersion = 1;
+    const versionPattern = new RegExp(`^${recordingDateTimePrefix.replace(/([.*+?^=!:${}()|[\]\/\\])/g, '\\$1')}.*_v(\\d+)\\.md$`);
+    samePrefixFiles.forEach(f => {
+      const m = f.match(versionPattern);
+      if (m && m[1]) {
+        const v = parseInt(m[1], 10);
+        if (v > maxVersion) maxVersion = v;
+      } else {
+        // If no _vN, treat as version 1
+        if (maxVersion < 1) maxVersion = 1;
+      }
+    });
+    versionSuffix = `_v${maxVersion + 1}`;
+  }
+  const finalName = `${recordingDateTimePrefix}_${summary}${versionSuffix}`;
 
   // Ensure output directory exists
   if (!fs.existsSync(OUTPUT_DIR)) {
     fs.mkdirSync(OUTPUT_DIR);
   }
 
-  // Append the original m4a filename to the summary markdown
-  const origM4AName = path.basename(m4aFilePath);
-  const mdFile = path.join(OUTPUT_DIR, `${finalName}.md`);
-  // Add a blank line before the filename for readability
-  fs.writeFileSync(mdFile, claudeText.trim() + `\n\nOriginal audio file: ${origM4AName}\n`);
-  console.log(`Claude output written to ${mdFile}`);
-
-  // Copy m4a file
-  const m4aDest = path.join(OUTPUT_DIR, `${finalName}.m4a`);
+  const keywordsInSummary = extractKeywords(claudeText);
+  const targetDir = getSingleTargetDir(keywordsInSummary);
+  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+  const mdFile = path.join(targetDir, `${finalName}.md`);
+  fs.writeFileSync(mdFile, claudeText.trim() + `\n\nOriginal audio file: "${m4aFilePath}"\nRecording date/time: ${recordingDateTime}\n`);
+  const m4aDest = path.join(targetDir, `${finalName}.m4a`);
   fs.copyFileSync(m4aFilePath, m4aDest);
-  console.log(`Voice memo audio copied to ${m4aDest}`);
+  console.log(`Claude output written to: ${mdFile}`);
+  console.log(`Voice memo audio copied to: ${m4aDest}`);
+  return finalName;
+}
 
+async function convertToTempMp3(inputPath, tempDir) {
+  const tempMp3 = path.join(tempDir, 'temp.mp3');
+  // Ensure tempDir exists
+  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+  // Remove previous temp.mp3 if exists
+  if (fs.existsSync(tempMp3)) fs.unlinkSync(tempMp3);
+  const cmd = `ffmpeg -i "${inputPath}" -c:a libmp3lame -b:a 96k "${tempMp3}" -y`;
+  await exec(cmd);
+  // Log out the resulting file size
+  if (fs.existsSync(tempMp3)) {
+    const stats = fs.statSync(tempMp3);
+    console.log(`Converted file size: ${(stats.size / (1024 * 1024)).toFixed(2)} MB`);
+  }
+  return tempMp3;
+}
+
+function cleanupTempDir(tempDir) {
+  if (fs.existsSync(tempDir)) {
+    fs.readdirSync(tempDir).forEach(f => fs.unlinkSync(path.join(tempDir, f)));
+    fs.rmdirSync(tempDir);
+  }
 }
 
 async function transcribeLatestVoiceMemo() {
@@ -146,10 +228,28 @@ async function transcribeLatestVoiceMemo() {
     rl.close();
     return;
   }
+
   console.log('\nRecent Voice Memos:');
-  files.forEach((f, i) => {
-    console.log(`${i + 1}. ${f.file} (modified: ${f.mtime.toLocaleString()})`);
-  });
+  for (let i = 0; i < files.length; i++) {
+    const { file, duration, date, gps } = files[i];
+    let info = [];
+    // Remove 'sec' and whitespace, then format as mins:secs if numeric
+    let formattedDuration = duration;
+    if (duration) {
+      const secMatch = duration.replace(/sec.*$/i, '').trim();
+      if (/^\d+(\.\d+)?$/.test(secMatch)) {
+        const totalSecs = Math.round(parseFloat(secMatch));
+        const mins = Math.floor(totalSecs / 60);
+        const secs = totalSecs % 60;
+        formattedDuration = `${mins}:${secs.toString().padStart(2, '0')}`;
+      }
+    }
+    if (formattedDuration) info.push(`duration: ${formattedDuration}`);
+    if (date) info.push(`date: ${date}`);
+    if (gps) info.push(`gps: ${gps}`);
+    console.log(`${i + 1}. ${file}${info.length ? ' (' + info.join(', ') + ')' : ''}`);
+  }
+
   let selected = 0;
   try {
     const sel = await rl.question('Select a file to transcribe (number): ');
@@ -158,35 +258,65 @@ async function transcribeLatestVoiceMemo() {
     selected = 0;
   }
   rl.close();
-  const audioFilePath = files[selected].fullPath;
-  console.log('Selected voice memo file:', audioFilePath);
-
-  const form = new FormData();
-  form.append('file', fs.createReadStream(audioFilePath));
-  form.append('model', 'whisper-1');
-
-  // Spinner for connecting/uploading/transcribing
-  const stopSpinner = startSpinner('Connecting and transcribing...');
-
-  let transcript = '';
-  try {
-    const response = await axios.post('https://api.openai.com/v1/audio/transcriptions', form, {
-      headers: {
-        ...form.getHeaders(),
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      }
-    });
-    stopSpinner();
-    transcript = response.data.text;
-    console.log('Transcription:', transcript);
-  } catch (err) {
-    stopSpinner();
-    console.error('Transcription error:', err.response?.data || err.message);
-    return;
+  const originalFileName = files[selected].file;
+  let recordingDateTime = null;
+  let recordingDateTimePrefix = null;
+  const dtMatch = originalFileName.match(/(\d{8})[ _-](\d{6})/);
+  if (dtMatch) {
+    // Format: YYYYMMDD_HH:MM:SS
+    const [_, ymd, hms] = dtMatch;
+    recordingDateTimePrefix = `${ymd}_${hms.slice(0,2)}:${hms.slice(2,4)}:${hms.slice(4,6)}`;
+    const year = ymd.slice(0, 4);
+    const month = ymd.slice(4, 6);
+    const day = ymd.slice(6, 8);
+    const hour = hms.slice(0, 2);
+    const min = hms.slice(2, 4);
+    const sec = hms.slice(4, 6);
+    recordingDateTime = `${year}-${month}-${day} ${hour}:${min}:${sec}`;
   }
+  const tempDir = path.join(__dirname, 'temp');
+  let audioFilePath = files[selected].fullPath;
+  let usedTemp = false;
+  try {
+    // Always convert to temp mp3 before transcription
+    audioFilePath = await convertToTempMp3(audioFilePath, tempDir);
+    usedTemp = true;
+    console.log('Selected voice memo file:', audioFilePath);
 
-  // Send to Claude and write output (markdown + audio)
-  await sendToClaude(transcript, audioFilePath);
+    const form = new FormData();
+    form.append('file', fs.createReadStream(audioFilePath));
+    form.append('model', 'whisper-1');
+
+    // Spinner for connecting/uploading/transcribing
+    const stopSpinner = startSpinner('Connecting and transcribing...');
+
+    let transcript = '';
+    try {
+      const response = await axios.post('https://api.openai.com/v1/audio/transcriptions', form, {
+        headers: {
+          ...form.getHeaders(),
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        }
+      });
+      stopSpinner();
+      transcript = response.data.text;
+      console.log('Transcription:', transcript);
+    } catch (err) {
+      stopSpinner();
+      console.error('Transcription error:', err.response?.data || err.message);
+      return;
+    }
+
+    // Send to Claude and write output (markdown + audio)
+    const finalName = await sendToClaude(transcript, audioFilePath, recordingDateTimePrefix, recordingDateTime);
+    // Write Whisper transcription to .txt file with same prefix as markdown/audio, only in the same dirs
+    const targetDir = getSingleTargetDir(extractKeywords(transcript));
+    const txtFile = path.join(targetDir, `${finalName}.txt`);
+    fs.writeFileSync(txtFile, transcript);
+    console.log(`Whisper transcription written to: ${txtFile}`);
+  } finally {
+    if (usedTemp) cleanupTempDir(tempDir);
+  }
 }
 
 // Run if called directly

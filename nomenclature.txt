@@ -1,9 +1,17 @@
-Wolff Terms
+# Wolff Audio Terms
 ProPatch
+Wolffhound (Wolff always as two fs - so wolf is wolff and wolfhound is wolffhound)
+PAW
 MeMore
 Clos (replaces if seen CLO - this is an algorithm for routing)
-mult (when signals are split)
-
+mult (replaces molts, never use molts in a file, a mult is when signals are split)
+PRMB
+RIO
+RTB
+DIBB
+Dante
+Monitor ST
+USB-C
 
 
 Generic Terms
