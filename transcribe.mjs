@@ -68,9 +68,11 @@ function getInstructionsNote() {
 }
 
 function extractKeywords(claudeText) {
-  const match = claudeText.match(/^Keywords:\s*\[([^\]]+)\]/m);
-  if (match && match[1]) {
-    return match[1].split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
+  // Try to extract keywords from a line like "Keywords: ..." or "## Keywords: ..."
+  const match = claudeText.match(/^[#\s]*Keywords:\s*(.+)$/im);
+  if (match) {
+    const keywords = match[1].split(',').map(k => k.trim()).filter(Boolean);
+    return keywords;
   }
   return [];
 }
@@ -87,8 +89,9 @@ function getOutputKeywords() {
 }
 
 function getSingleTargetDir(keywordsInSummary) {
-  const outputKeywords = getOutputKeywords();
-  const matchedKeyword = outputKeywords.find(k => keywordsInSummary.includes(k));
+  const outputKeywords = getOutputKeywords(); // already lowercased
+  const summaryKeywordsLower = keywordsInSummary.map(k => k.toLowerCase());
+  const matchedKeyword = outputKeywords.find(k => summaryKeywordsLower.includes(k));
   if (matchedKeyword) {
     return path.join(OUTPUT_DIR, matchedKeyword);
   }
@@ -185,7 +188,7 @@ async function sendToClaude(transcript, m4aFilePath, recordingDateTimePrefix, re
   fs.copyFileSync(m4aFilePath, m4aDest);
   console.log(`Claude output written to: ${mdFile}`);
   console.log(`Voice memo audio copied to: ${m4aDest}`);
-  return finalName;
+  return { finalName, targetDir };
 }
 
 async function convertToTempMp3(inputPath, tempDir) {
@@ -315,10 +318,8 @@ async function transcribeLatestVoiceMemo() {
     }
 
     // Send to Claude and write output (markdown + audio)
-    const finalName = await sendToClaude(transcript, files[selected].fullPath, recordingDateTimePrefix, recordingDateTime);
+    const { finalName, targetDir } = await sendToClaude(transcript, files[selected].fullPath, recordingDateTimePrefix, recordingDateTime);
     // Write Whisper transcription to .txt file with same prefix as markdown/audio, only in the same dirs
-    const keywordsInSummary = extractKeywords(transcript);
-    const targetDir = getSingleTargetDir(keywordsInSummary);
     const txtFile = path.join(targetDir, `${finalName}.txt`);
     fs.writeFileSync(txtFile, transcript);
     console.log(`Whisper transcription written to: ${txtFile}`);
@@ -375,10 +376,8 @@ export async function processVoiceMemo(filePath) {
   }
   // Send to Claude and write output (markdown + audio)
   // Pass the original .m4a path, not the temp mp3
-  const finalName = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime);
+  const { finalName, targetDir } = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime);
   // Write Whisper transcription to .txt file with same prefix as markdown/audio, only in the same dir
-  const keywordsInSummary = extractKeywords(transcript);
-  const targetDir = getSingleTargetDir(keywordsInSummary);
   const txtFile = path.join(targetDir, `${finalName}.txt`);
   fs.writeFileSync(txtFile, transcript);
   console.log(`Whisper transcription written to: ${txtFile}`);
