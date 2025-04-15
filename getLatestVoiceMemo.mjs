@@ -1,29 +1,24 @@
 import { readdir, stat } from 'fs/promises';
 import path from 'path';
-import { spawn } from 'child_process';
 import os from 'os';
 
 const recordingsDir = path.join(os.homedir(), 'Library', 'Group Containers', 'group.com.apple.VoiceMemos.shared', 'Recordings');
-const shouldRead = process.argv.includes('-read') || process.argv.includes('--read');
 
-async function getLatestVoiceMemo() {
+export async function getLatestVoiceMemos(count = 1) {
   let files;
   try {
     files = await readdir(recordingsDir);
   } catch (err) {
-    console.error('Error reading directory:', err);
-    return;
+    throw new Error('Error reading directory: ' + err.message);
   }
   if (!files.length) {
-    console.log('No files found.');
-    return;
+    throw new Error('No files found.');
   }
 
   // Only consider .m4a files
   const m4aFiles = files.filter(file => file.toLowerCase().endsWith('.m4a'));
   if (!m4aFiles.length) {
-    console.log('No .m4a files found.');
-    return;
+    throw new Error('No .m4a files found.');
   }
 
   // Map .m4a files to their stats
@@ -39,21 +34,10 @@ async function getLatestVoiceMemo() {
   const onlyFiles = filesWithStats.filter(entry => entry.mtime && entry.file);
 
   if (!onlyFiles.length) {
-    console.log('No .m4a files found.');
-    return;
+    throw new Error('No .m4a files found.');
   }
 
-  // Find the latest .m4a file
+  // Sort descending by mtime and return up to 'count' files
   onlyFiles.sort((a, b) => b.mtime - a.mtime);
-  const latest = onlyFiles[0];
-
-  console.log('Latest .m4a file:', latest.file);
-
-  if (shouldRead) {
-    // Play the .m4a file with afplay (macOS)
-    const afplay = spawn('afplay', [latest.fullPath], { stdio: 'inherit' });
-    afplay.on('close', () => {});
-  }
+  return onlyFiles.slice(0, count);
 }
-
-getLatestVoiceMemo();
