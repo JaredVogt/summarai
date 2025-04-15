@@ -175,7 +175,12 @@ async function sendToClaude(transcript, m4aFilePath, recordingDateTimePrefix, re
   const targetDir = getSingleTargetDir(keywordsInSummary);
   if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
   const mdFile = path.join(targetDir, `${finalName}.md`);
-  fs.writeFileSync(mdFile, claudeText.trim() + `\n\nOriginal audio file: "${m4aFilePath}"\nRecording date/time: ${recordingDateTime}\n`);
+  fs.writeFileSync(
+    mdFile,
+    claudeText.trim() +
+    `\n\nOriginal audio file: "${m4aFilePath}"\nRecording date/time: ${recordingDateTime}\n` +
+    `\n# Transcription\n\n${transcript}\n`
+  );
   const m4aDest = path.join(targetDir, `${finalName}.m4a`);
   fs.copyFileSync(m4aFilePath, m4aDest);
   console.log(`Claude output written to: ${mdFile}`);
@@ -286,6 +291,8 @@ async function transcribeLatestVoiceMemo() {
     const form = new FormData();
     form.append('file', fs.createReadStream(audioFilePath));
     form.append('model', 'whisper-1');
+    const nomenclaturePrompt = getNomenclaturePrompt();
+    form.append('prompt', nomenclaturePrompt);
 
     // Spinner for connecting/uploading/transcribing
     const stopSpinner = startSpinner('Connecting and transcribing...');
@@ -308,14 +315,80 @@ async function transcribeLatestVoiceMemo() {
     }
 
     // Send to Claude and write output (markdown + audio)
-    const finalName = await sendToClaude(transcript, audioFilePath, recordingDateTimePrefix, recordingDateTime);
+    const finalName = await sendToClaude(transcript, files[selected].fullPath, recordingDateTimePrefix, recordingDateTime);
     // Write Whisper transcription to .txt file with same prefix as markdown/audio, only in the same dirs
-    const targetDir = getSingleTargetDir(extractKeywords(transcript));
+    const keywordsInSummary = extractKeywords(transcript);
+    const targetDir = getSingleTargetDir(keywordsInSummary);
     const txtFile = path.join(targetDir, `${finalName}.txt`);
     fs.writeFileSync(txtFile, transcript);
     console.log(`Whisper transcription written to: ${txtFile}`);
   } finally {
     if (usedTemp) cleanupTempDir(tempDir);
+  }
+}
+
+// Exportable main workflow for automation
+export async function processVoiceMemo(filePath) {
+  const originalFileName = path.basename(filePath);
+  let recordingDateTime = null;
+  let recordingDateTimePrefix = null;
+  const dtMatch = originalFileName.match(/(\d{8})[ _-](\d{6})/);
+  if (dtMatch) {
+    const [_, ymd, hms] = dtMatch;
+    recordingDateTimePrefix = `${ymd}_${hms.slice(0,2)}:${hms.slice(2,4)}:${hms.slice(4,6)}`;
+    const year = ymd.slice(0, 4);
+    const month = ymd.slice(4, 6);
+    const day = ymd.slice(6, 8);
+    const hour = hms.slice(0, 2);
+    const min = hms.slice(2, 4);
+    const sec = hms.slice(4, 6);
+    recordingDateTime = `${year}-${month}-${day} ${hour}:${min}:${sec}`;
+  }
+  // Always convert to temp mp3
+  const tempDir = path.join(path.dirname(filePath), 'temp');
+  const tempMp3Path = await convertToTempMp3(filePath, tempDir);
+  let usedTemp = true;
+  console.log('Selected voice memo file:', tempMp3Path);
+  const form = new FormData();
+  form.append('file', fs.createReadStream(tempMp3Path));
+  form.append('model', 'whisper-1');
+  const nomenclaturePrompt = getNomenclaturePrompt();
+  form.append('prompt', nomenclaturePrompt);
+  const stopSpinner = startSpinner('Connecting and transcribing...');
+  let transcript = '';
+  try {
+    const response = await axios.post('https://api.openai.com/v1/audio/transcriptions', form, {
+      headers: {
+        ...form.getHeaders(),
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      }
+    });
+    stopSpinner();
+    transcript = response.data.text;
+    console.log('Transcription:', transcript);
+  } catch (err) {
+    stopSpinner();
+    console.error('Transcription error:', err.response?.data || err.message);
+    return;
+  } finally {
+    if (usedTemp) cleanupTempDir(tempDir);
+  }
+  // Send to Claude and write output (markdown + audio)
+  // Pass the original .m4a path, not the temp mp3
+  const finalName = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime);
+  // Write Whisper transcription to .txt file with same prefix as markdown/audio, only in the same dir
+  const keywordsInSummary = extractKeywords(transcript);
+  const targetDir = getSingleTargetDir(keywordsInSummary);
+  const txtFile = path.join(targetDir, `${finalName}.txt`);
+  fs.writeFileSync(txtFile, transcript);
+  console.log(`Whisper transcription written to: ${txtFile}`);
+}
+
+function getNomenclaturePrompt() {
+  try {
+    return fs.readFileSync(path.join(__dirname, 'nomenclature.txt'), 'utf8');
+  } catch {
+    return '';
   }
 }
 

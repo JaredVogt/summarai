@@ -1,6 +1,7 @@
 # Wolff Audio Terms
+Wolff (replaces wolf 95% of the time... if the context is talking about the animal, then maybe it is wolf)
 ProPatch
-Wolffhound (Wolff always as two fs - so wolf is wolff and wolfhound is wolffhound)
+Wolffhound (Wolff always has two Fs - so wolf is wolff and wolfhound is wolffhound)
 PAW
 MeMore
 Clos (replaces if seen CLO - this is an algorithm for routing)
