@@ -15,7 +15,7 @@ const __dirname = path.dirname(__filename);
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const OUTPUT_DIR = './output';
+const OUTPUT_DIR = '/Users/jaredvogt/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription';
 const NOMENCLATURE_PATH = './nomenclature.txt';
 
 function startSpinner(message) {
@@ -236,8 +236,25 @@ async function transcribeLatestVoiceMemo() {
     rl.close();
     return;
   }
+  // Filter out already processed files
+  const processed = getProcessedFilenames();
+  files = files.filter(f => {
+    // Compose the processed filename pattern as used in process_history.json
+    const originalFileName = path.basename(f.file);
+    const dtMatch = originalFileName.match(/(\d{8})[ _-](\d{6})/);
+    let recordingDateTimePrefix = null;
+    let processedName = null;
+    if (dtMatch) {
+      const [_, ymd, hms] = dtMatch;
+      recordingDateTimePrefix = `${ymd}_${hms.slice(0,2)}:${hms.slice(2,4)}:${hms.slice(4,6)}`;
+      // processedName will be a prefix; check if any processed name starts with this
+      return !Array.from(processed).some(name => name.startsWith(recordingDateTimePrefix));
+    }
+    // If can't parse, just show it
+    return true;
+  });
   if (!files.length) {
-    console.error('No files found.');
+    console.error('No unprocessed files found.');
     rl.close();
     return;
   }
@@ -335,6 +352,8 @@ async function transcribeLatestVoiceMemo() {
 
 // Exportable main workflow for automation
 export async function processVoiceMemo(filePath) {
+  console.log('debug_process_history: ENTERED processVoiceMemo');
+  console.log('debug_process_history: process.cwd() =', process.cwd(), ', __dirname =', __dirname);
   const originalFileName = path.basename(filePath);
   let recordingDateTime = null;
   let recordingDateTimePrefix = null;
@@ -348,7 +367,7 @@ export async function processVoiceMemo(filePath) {
     const hour = hms.slice(0, 2);
     const min = hms.slice(2, 4);
     const sec = hms.slice(4, 6);
-    recordingDateTime = `${year}-${month}-${day} ${hour}:${min}:${sec}`;
+    recordingDateTime = `${year}-${month}-${day}T${hour}:${min}:${sec}-07:00`;
   }
   // Always convert to temp mp3
   const tempDir = path.join(path.dirname(filePath), 'temp');
@@ -386,6 +405,10 @@ export async function processVoiceMemo(filePath) {
   const txtFile = path.join(targetDir, `${finalName}.txt`);
   fs.writeFileSync(txtFile, transcript);
   console.log(`Whisper transcription written to: ${txtFile}`);
+
+  // Add to process_history.json in root
+  console.log('debug_process_history: about to call addToProcessHistory with', finalName, recordingDateTime || new Date().toISOString());
+  addToProcessHistory(finalName, recordingDateTime || new Date().toISOString());
 }
 
 function getNomenclaturePrompt() {
@@ -394,6 +417,39 @@ function getNomenclaturePrompt() {
   } catch {
     return '';
   }
+}
+
+// Helper to get processed filenames from process_history.json
+function getProcessedFilenames() {
+  const historyPath = path.join(__dirname, 'process_history.json');
+  if (!fs.existsSync(historyPath)) return new Set();
+  try {
+    const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+    if (!Array.isArray(history)) return new Set();
+    return new Set(history.map(entry => entry.filename));
+  } catch {
+    return new Set();
+  }
+}
+
+// Helper to add processed file to process_history.json
+function addToProcessHistory(filename, timestamp) {
+  const historyPath = path.join(__dirname, 'process_history.json');
+  console.log('debug_process_history: ENTERED addToProcessHistory');
+  console.log('debug_process_history: process.cwd() =', process.cwd(), ', __dirname =', __dirname);
+  console.log('debug_process_history: historyPath =', historyPath);
+  let history = [];
+  if (fs.existsSync(historyPath)) {
+    try {
+      history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+      if (!Array.isArray(history)) history = [];
+    } catch {
+      history = [];
+    }
+  }
+  history.push({ filename, timestamp });
+  fs.writeFileSync(historyPath, JSON.stringify(history, null, 2));
+  console.log(`debug_process_history: wrote { filename: "${filename}", timestamp: "${timestamp}" } to process_history.json`);
 }
 
 // Run if called directly
