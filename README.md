@@ -4,9 +4,9 @@
 
 - Lists recent voice memos sorted by date/time in filename (not modification time)
 - Displays metadata for each memo: duration (mins:secs), recording date, GPS info
-- Always compresses selected .m4a files to temp mp3 (96k) before transcription using ffmpeg
+- Always compresses selected .m4a files to temp AAC format (48k, mono, 16kHz) before transcription using ffmpeg
 - Cleans up temp files after processing
-- Sends mp3 to Whisper for transcription
+- Sends compressed audio to Whisper for transcription
 - Claude summarization and markdown output
 - Consistent output naming: prefix is `YYYYMMDD_HH:MM:SS` from original filename
 - Output files are written to `output/` or `output/[keyword]/` depending on keyword match (first match only)

@@ -196,20 +196,31 @@ async function sendToClaude(transcript, m4aFilePath, recordingDateTimePrefix, re
   return { finalName, targetDir };
 }
 
-async function convertToTempMp3(inputPath, tempDir) {
-  const tempMp3 = path.join(tempDir, 'temp.mp3');
+async function convertToTempAAC(inputPath, tempDir) {
+  const tempAAC = path.join(tempDir, 'temp.m4a');
   // Ensure tempDir exists
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-  // Remove previous temp.mp3 if exists
-  if (fs.existsSync(tempMp3)) fs.unlinkSync(tempMp3);
-  const cmd = `ffmpeg -i "${inputPath}" -c:a libmp3lame -b:a 96k "${tempMp3}" -y`;
-  await exec(cmd);
+  // Remove previous temp file if exists
+  if (fs.existsSync(tempAAC)) fs.unlinkSync(tempAAC);
+  
+  // Start spinner animation for ffmpeg conversion
+  const stopSpinner = startSpinner('Converting audio file...');
+  
+  const cmd = `ffmpeg -i "${inputPath}" -c:a aac -b:a 48k -ar 16000 -ac 1 "${tempAAC}" -y`;
+  try {
+    await exec(cmd);
+    stopSpinner(); // Stop the spinner animation when done
+  } catch (error) {
+    stopSpinner(); // Make sure to stop the spinner even if there's an error
+    throw error; // Re-throw the error for the caller to handle
+  }
+  
   // Log out the resulting file size
-  if (fs.existsSync(tempMp3)) {
-    const stats = fs.statSync(tempMp3);
+  if (fs.existsSync(tempAAC)) {
+    const stats = fs.statSync(tempAAC);
     console.log(`Converted file size: ${(stats.size / (1024 * 1024)).toFixed(2)} MB`);
   }
-  return tempMp3;
+  return tempAAC;
 }
 
 function cleanupTempDir(tempDir) {
@@ -301,13 +312,13 @@ export async function processVoiceMemo(filePath) {
     const sec = hms.slice(4, 6);
     recordingDateTime = `${year}-${month}-${day}T${hour}:${min}:${sec}-07:00`;
   }
-  // Always convert to temp mp3
+  // Always convert to temp AAC
   const tempDir = path.join(path.dirname(filePath), 'temp');
-  const tempMp3Path = await convertToTempMp3(filePath, tempDir);
+  const tempAACPath = await convertToTempAAC(filePath, tempDir);
   let usedTemp = true;
   console.log('Processing voice memo:', originalFileName);
   const form = new FormData();
-  form.append('file', fs.createReadStream(tempMp3Path));
+  form.append('file', fs.createReadStream(tempAACPath));
   form.append('model', 'whisper-1');
   const nomenclaturePrompt = getNomenclaturePrompt();
   form.append('prompt', nomenclaturePrompt);
@@ -331,7 +342,7 @@ export async function processVoiceMemo(filePath) {
     if (usedTemp) cleanupTempDir(tempDir);
   }
   // Send to Claude and write output (markdown + audio)
-  // Pass the original .m4a path, not the temp mp3
+  // Pass the original .m4a path, not the temp AAC
   const { finalName, targetDir } = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime);
   // Write Whisper transcription to .txt file with same prefix as markdown/audio, only in the same dir
   const txtFile = path.join(targetDir, `${finalName}.txt`);
