@@ -6,227 +6,57 @@ import { fileURLToPath } from 'url';
 import { getLatestVoiceMemos } from './getLatestVoiceMemo.mjs';
 import readline from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
-import { exec as execCb } from 'child_process';
 import { promisify } from 'util';
-const exec = promisify(execCb);
+import { sendToClaude } from './claudeAPI.mjs';
+import { transcribeWithWhisper } from './whisperAPI.mjs';
+import { convertToTempAAC, cleanupTempDir } from './audioProcessing.mjs';
+import { startSpinner, sanitizeFilename } from './utils.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const OUTPUT_DIR = '/Users/jaredvogt/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription';
-const NOMENCLATURE_PATH = './nomenclature.txt';
 
-function startSpinner(message) {
-  const spinnerChars = ['|', '/', '-', '\\'];
-  let i = 0;
-  process.stdout.write(message);
-  const interval = setInterval(() => {
-    process.stdout.write(`\r${message} ${spinnerChars[i++ % spinnerChars.length]}`);
-  }, 100);
-  return () => {
-    clearInterval(interval);
-    process.stdout.write('\r' + ' '.repeat(message.length + 2) + '\r');
-  };
-}
-
-function sanitizeFilename(name) {
-  return name.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '_').substring(0, 60);
-}
-
-function isGenericSummary(summary) {
-  const genericWords = [
-    'voice', 'memo', 'summary', 'transcript', 'recording', 'note', 'audio', 'untitled', 'output', 'file'
-  ];
-  const lower = summary.toLowerCase();
-  return genericWords.some(word => lower.includes(word));
-}
-
-function getNomenclatureNote() {
-  let terms = '';
+// Helper to get processed filenames from process_history.json
+function getProcessedFilenames() {
+  const historyPath = path.join(__dirname, 'process_history.json');
+  if (!fs.existsSync(historyPath)) return new Set();
   try {
-    terms = fs.readFileSync(NOMENCLATURE_PATH, 'utf8').trim();
+    const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+    if (!Array.isArray(history)) return new Set();
+    return new Set(history.map(entry => entry.filename));
   } catch {
-    return '';
-  }
-  if (!terms) return '';
-  return `\n\n---\nThe following is a list of terms, product names, or jargon that may appear in the transcript. Please use this list to help interpret, spell, or summarize the content accurately.\n\n${terms}\n---\n`;
-}
-
-function getInstructionsNote() {
-  let instructions = '';
-  try {
-    instructions = fs.readFileSync(path.join(__dirname, 'instructions.md'), 'utf8').trim();
-    if (instructions) {
-      instructions = 'The following are additional instructions to guide your response:\n' + instructions + '\n';
-    }
-  } catch (e) {
-    // If instructions.md does not exist, skip
-  }
-  return instructions;
-}
-
-function extractKeywords(claudeText) {
-  // Try to extract keywords from a line like "Keywords: ..." or "## Keywords: ..."
-  const match = claudeText.match(/^[#\s]*Keywords:\s*(.+)$/im);
-  if (match) {
-    const keywords = match[1].split(',').map(k => k.trim()).filter(Boolean);
-    return keywords;
-  }
-  return [];
-}
-
-function getOutputKeywords() {
-  try {
-    return fs.readFileSync(path.join(__dirname, 'keywords.txt'), 'utf8')
-      .split(/\r?\n/)
-      .map(k => k.trim().toLowerCase())
-      .filter(Boolean);
-  } catch {
-    return [];
+    return new Set();
   }
 }
 
-function getSingleTargetDir(keywordsInSummary) {
-  const outputKeywords = getOutputKeywords(); // already lowercased
-  const summaryKeywordsLower = keywordsInSummary.map(k => k.toLowerCase());
-  const matchedKeyword = outputKeywords.find(k => summaryKeywordsLower.includes(k));
-  if (matchedKeyword) {
-    return path.join(OUTPUT_DIR, matchedKeyword);
-  }
-  return OUTPUT_DIR;
-}
-
-async function sendToClaude(transcript, m4aFilePath, recordingDateTimePrefix, recordingDateTime) {
-  if (!ANTHROPIC_API_KEY) {
-    console.error('ANTHROPIC_API_KEY not set.');
-    return;
-  }
-  const nomenclatureNote = getNomenclatureNote();
-  const instructionsNote = getInstructionsNote();
-  const prompt = `${instructionsNote}${nomenclatureNote}Here is the voice memo transcription:\n${transcript}`;
-  const spinnerStop = startSpinner('Sending to Claude...');
-  let claudeText = '';
-  try {
-    const response = await axios.post('https://api.anthropic.com/v1/messages', {
-      model: 'claude-3-7-sonnet-20250219',
-      max_tokens: 1024,
-      messages: [
-        { role: 'user', content: prompt }
-      ]
-    }, {
-      headers: {
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
-      }
-    });
-    spinnerStop();
-    claudeText = response.data.content?.[0]?.text || response.data.completion || '[No content returned]';
-  } catch (err) {
-    spinnerStop();
-    console.error('Error from Claude:', err.response?.data || err.message);
-    return;
-  }
-
-  // Extract the summary after 'Summary:' (with or without brackets)
-  let summary = '';
-  let summaryMatch = claudeText.match(/Summary:\s*\[([^\]]+)\]/i);
-  if (summaryMatch && summaryMatch[1]) {
-    summary = sanitizeFilename(summaryMatch[1].trim());
-  } else {
-    summaryMatch = claudeText.match(/Summary:\s*([^\n]+)/i);
-    if (summaryMatch && summaryMatch[1]) {
-      summary = sanitizeFilename(summaryMatch[1].trim());
-    }
-  }
-  if (!summary) {
-    summary = `memo_${path.basename(m4aFilePath).replace(/\.[^.]+$/, '')}`;
-  }
-
-  // Check for existing files with the same date and time prefix, and increment version if needed
-  let versionSuffix = '';
-  const outputFiles = fs.readdirSync(OUTPUT_DIR);
-  // Only match files with the same date and time prefix, regardless of summary
-  const prefixPattern = new RegExp(`^${recordingDateTimePrefix.replace(/([.*+?^=!:${}()|[\]\/\\])/g, '\\$1')}`);
-  const samePrefixFiles = outputFiles.filter(f => prefixPattern.test(f));
-  if (samePrefixFiles.length > 0) {
-    // Find the highest _vN suffix used for any file with this prefix
-    let maxVersion = 1;
-    const versionPattern = new RegExp(`^${recordingDateTimePrefix.replace(/([.*+?^=!:${}()|[\]\/\\])/g, '\\$1')}.*_v(\\d+)\\.md$`);
-    samePrefixFiles.forEach(f => {
-      const m = f.match(versionPattern);
-      if (m && m[1]) {
-        const v = parseInt(m[1], 10);
-        if (v > maxVersion) maxVersion = v;
-      } else {
-        // If no _vN, treat as version 1
-        if (maxVersion < 1) maxVersion = 1;
-      }
-    });
-    versionSuffix = `_v${maxVersion + 1}`;
-  }
-  const finalName = `${recordingDateTimePrefix}_${summary}${versionSuffix}`;
-
-  // Ensure output directory exists
-  if (!fs.existsSync(OUTPUT_DIR)) {
-    fs.mkdirSync(OUTPUT_DIR);
-  }
-
-  const keywordsInSummary = extractKeywords(claudeText);
-  const targetDir = getSingleTargetDir(keywordsInSummary);
-  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
-  const mdFile = path.join(targetDir, `${finalName}.md`);
-  const homeDir = process.env.HOME || process.env.USERPROFILE;
-  let displayAudioPath = m4aFilePath;
-  if (homeDir && m4aFilePath.startsWith(homeDir)) {
-    displayAudioPath = m4aFilePath.replace(homeDir, '~');
-  }
-  fs.writeFileSync(
-    mdFile,
-    claudeText.trim() +
-    `\n\nOriginal audio file: "${displayAudioPath}"\nRecording date/time: ${recordingDateTime}\n` +
-    `\n# Transcription\n\n${transcript}\n`
-  );
-  const m4aDest = path.join(targetDir, `${finalName}.m4a`);
-  fs.copyFileSync(m4aFilePath, m4aDest);
-  console.log(`Claude output written to: ${mdFile}`);
-  console.log(`Voice memo audio copied to: ${m4aDest}`);
-  return { finalName, targetDir };
-}
-
-async function convertToTempAAC(inputPath, tempDir) {
-  const tempAAC = path.join(tempDir, 'temp.m4a');
-  // Ensure tempDir exists
-  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-  // Remove previous temp file if exists
-  if (fs.existsSync(tempAAC)) fs.unlinkSync(tempAAC);
+// Helper to add processed file to process_history.json
+function addToProcessHistory(filename, timestamp) {
+  const historyPath = path.join(__dirname, 'process_history.json');
   
-  // Start spinner animation for ffmpeg conversion
-  const stopSpinner = startSpinner('Converting audio file...');
-  
-  const cmd = `ffmpeg -i "${inputPath}" -c:a aac -b:a 48k -ar 16000 -ac 1 "${tempAAC}" -y`;
+  // Check if directory is writable
   try {
-    await exec(cmd);
-    stopSpinner(); // Stop the spinner animation when done
+    fs.accessSync(path.dirname(historyPath), fs.constants.W_OK);
   } catch (error) {
-    stopSpinner(); // Make sure to stop the spinner even if there's an error
-    throw error; // Re-throw the error for the caller to handle
+    console.error(`Error: Directory is not writable: ${path.dirname(historyPath)}`);
+    console.error(`Permission error: ${error.message}`);
+    return; // Exit function if directory is not writable
   }
   
-  // Log out the resulting file size
-  if (fs.existsSync(tempAAC)) {
-    const stats = fs.statSync(tempAAC);
-    console.log(`Converted file size: ${(stats.size / (1024 * 1024)).toFixed(2)} MB`);
+  let history = [];
+  if (fs.existsSync(historyPath)) {
+    try {
+      history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+      if (!Array.isArray(history)) history = [];
+    } catch {
+      history = [];
+    }
   }
-  return tempAAC;
-}
-
-function cleanupTempDir(tempDir) {
-  if (fs.existsSync(tempDir)) {
-    fs.readdirSync(tempDir).forEach(f => fs.unlinkSync(path.join(tempDir, f)));
-    fs.rmdirSync(tempDir);
+  history.push({ filename, timestamp });
+  try {
+    fs.writeFileSync(historyPath, JSON.stringify(history, null, 2));
+  } catch (error) {
+    console.error(`Error writing to process_history.json: ${error.message}`);
   }
 }
 
@@ -317,90 +147,25 @@ export async function processVoiceMemo(filePath) {
   const tempAACPath = await convertToTempAAC(filePath, tempDir);
   let usedTemp = true;
   console.log('Processing voice memo:', originalFileName);
-  const form = new FormData();
-  form.append('file', fs.createReadStream(tempAACPath));
-  form.append('model', 'whisper-1');
-  const nomenclaturePrompt = getNomenclaturePrompt();
-  form.append('prompt', nomenclaturePrompt);
-  const stopSpinner = startSpinner('Connecting and transcribing...');
-  let transcript = '';
   try {
-    const response = await axios.post('https://api.openai.com/v1/audio/transcriptions', form, {
-      headers: {
-        ...form.getHeaders(),
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      }
-    });
-    stopSpinner();
-    transcript = response.data.text;
+    const transcript = await transcribeWithWhisper(tempAACPath);
     console.log('Transcription:', transcript);
-  } catch (err) {
-    stopSpinner();
-    console.error('Transcription error:', err.response?.data || err.message);
-    return;
+  
+    // Send to Claude and write output (markdown + audio)
+    // Pass the original .m4a path, not the temp AAC
+    const { finalName, targetDir } = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, OUTPUT_DIR);
+    // Write Whisper transcription to .txt file with same prefix as markdown/audio, only in the same dir
+    const txtFile = path.join(targetDir, `${finalName}.txt`);
+    fs.writeFileSync(txtFile, transcript);
+    console.log(`Whisper transcription written to: ${txtFile}`);
+  
+    // Add to process_history.json in root
+    addToProcessHistory(originalFileName, recordingDateTime || new Date().toISOString());
+    return { finalName, targetDir, transcript };
+  } catch (error) {
+    console.error(error.message);
   } finally {
     if (usedTemp) cleanupTempDir(tempDir);
-  }
-  // Send to Claude and write output (markdown + audio)
-  // Pass the original .m4a path, not the temp AAC
-  const { finalName, targetDir } = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime);
-  // Write Whisper transcription to .txt file with same prefix as markdown/audio, only in the same dir
-  const txtFile = path.join(targetDir, `${finalName}.txt`);
-  fs.writeFileSync(txtFile, transcript);
-  console.log(`Whisper transcription written to: ${txtFile}`);
-
-  // Add to process_history.json in root
-  addToProcessHistory(originalFileName, recordingDateTime || new Date().toISOString());
-}
-
-function getNomenclaturePrompt() {
-  try {
-    return fs.readFileSync(path.join(__dirname, 'nomenclature.txt'), 'utf8');
-  } catch {
-    return '';
-  }
-}
-
-// Helper to get processed filenames from process_history.json
-function getProcessedFilenames() {
-  const historyPath = path.join(__dirname, 'process_history.json');
-  if (!fs.existsSync(historyPath)) return new Set();
-  try {
-    const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
-    if (!Array.isArray(history)) return new Set();
-    return new Set(history.map(entry => entry.filename));
-  } catch {
-    return new Set();
-  }
-}
-
-// Helper to add processed file to process_history.json
-function addToProcessHistory(filename, timestamp) {
-  const historyPath = path.join(__dirname, 'process_history.json');
-  
-  // Check if directory is writable
-  try {
-    fs.accessSync(path.dirname(historyPath), fs.constants.W_OK);
-  } catch (error) {
-    console.error(`Error: Directory is not writable: ${path.dirname(historyPath)}`);
-    console.error(`Permission error: ${error.message}`);
-    return; // Exit function if directory is not writable
-  }
-  
-  let history = [];
-  if (fs.existsSync(historyPath)) {
-    try {
-      history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
-      if (!Array.isArray(history)) history = [];
-    } catch {
-      history = [];
-    }
-  }
-  history.push({ filename, timestamp });
-  try {
-    fs.writeFileSync(historyPath, JSON.stringify(history, null, 2));
-  } catch (error) {
-    console.error(`Error writing to process_history.json: ${error.message}`);
   }
 }
 

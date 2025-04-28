@@ -5,7 +5,7 @@ Wolffhound (Wolff always has two Fs - so wolf is wolff and wolfhound is wolffhou
 PAW
 MeMore
 Clos (replaces if seen CLO - this is an algorithm for routing)
-mult (replaces molts, never use molts in a file, a mult is when signals are split)
+mult or mults (replaces molts or molt, never use molts or molt in a file, a mult is when signals are split)
 PRMB
 RIO
 RTB
