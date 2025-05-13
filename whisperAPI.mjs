@@ -22,9 +22,10 @@ export function getNomenclaturePrompt() {
 /**
  * Transcribes audio using OpenAI's Whisper API
  * @param {string} audioFilePath - Path to the audio file to transcribe
- * @returns {Promise<string>} - Transcription text
+ * @param {boolean} [verbose=false] - Whether to return verbose JSON with timestamps
+ * @returns {Promise<string|Object>} - Transcription text or full JSON response with timestamps
  */
-export async function transcribeWithWhisper(audioFilePath) {
+export async function transcribeWithWhisper(audioFilePath, verbose = false) {
   if (!OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY not set');
   }
@@ -37,6 +38,11 @@ export async function transcribeWithWhisper(audioFilePath) {
   const nomenclaturePrompt = getNomenclaturePrompt();
   form.append('prompt', nomenclaturePrompt);
 
+  // Add response_format for verbose JSON output with timestamps if requested
+  if (verbose) {
+    form.append('response_format', 'verbose_json');
+  }
+
   // Spinner for connecting/uploading/transcribing
   const stopSpinner = startSpinner('Connecting to Whisper API and transcribing...');
 
@@ -48,7 +54,9 @@ export async function transcribeWithWhisper(audioFilePath) {
       }
     });
     stopSpinner();
-    return response.data.text;
+    
+    // Return full response data if verbose mode is enabled, otherwise just the text
+    return verbose ? response.data : response.data.text;
   } catch (err) {
     stopSpinner();
     throw new Error(`Transcription error: ${JSON.stringify(err.response?.data || err.message, null, 2)}`);

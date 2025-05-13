@@ -148,25 +148,61 @@ export async function processVoiceMemo(filePath) {
   let usedTemp = true;
   console.log('Processing voice memo:', originalFileName);
   try {
-    const transcript = await transcribeWithWhisper(tempAACPath);
-    console.log('Transcription:', transcript);
+    // Use verbose mode to get timestamps and detailed JSON
+    const transcriptionData = await transcribeWithWhisper(tempAACPath, true);
+    
+    // Extract the text transcript from the response
+    const transcript = transcriptionData.text;
+    
+    // Create a timestamped segments text with lowercase heading
+    let segmentsContent = "## transcription with timestamps\n";
+    if (transcriptionData.segments && Array.isArray(transcriptionData.segments)) {
+      transcriptionData.segments.forEach((segment, i) => {
+        const startTime = formatTimestamp(segment.start);
+        const endTime = formatTimestamp(segment.end);
+        segmentsContent += `[${startTime} - ${endTime}] ${segment.text}\n`;
+      });
+    }
+    
+    // Print the timestamped transcription instead of just the text
+    console.log('Transcription:');
+    console.log(segmentsContent);
   
     // Send to Claude and write output (markdown + audio)
     // Pass the original .m4a path, not the temp AAC
-    const { finalName, targetDir } = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, OUTPUT_DIR);
-    // Write Whisper transcription to .txt file with same prefix as markdown/audio, only in the same dir
-    const txtFile = path.join(targetDir, `${finalName}.txt`);
-    fs.writeFileSync(txtFile, transcript);
-    console.log(`Whisper transcription written to: ${txtFile}`);
+    const { finalName, targetDir, mdFilePath } = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, OUTPUT_DIR);
+    
+    // Write segments to a file
+    const segmentsFile = path.join(targetDir, `${finalName}_segments.txt`);
+    fs.writeFileSync(segmentsFile, segmentsContent);
+    console.log(`Segments with timestamps written to: ${segmentsFile}`);
+    
+    // Append segments to the markdown file
+    if (mdFilePath && fs.existsSync(mdFilePath)) {
+      fs.appendFileSync(mdFilePath, '\n\n' + segmentsContent);
+      console.log(`Timestamps appended to markdown file: ${mdFilePath}`);
+    }
   
     // Add to process_history.json in root
     addToProcessHistory(originalFileName, recordingDateTime || new Date().toISOString());
-    return { finalName, targetDir, transcript };
+    return { finalName, targetDir, transcript, segmentsContent };
   } catch (error) {
     console.error(error.message);
   } finally {
     if (usedTemp) cleanupTempDir(tempDir);
   }
+}
+
+/**
+ * Formats seconds to a readable timestamp format (MM:SS.ms)
+ * @param {number} seconds - Time in seconds
+ * @returns {string} - Formatted timestamp
+ */
+function formatTimestamp(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 1000);
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
 }
 
 // Run if called directly

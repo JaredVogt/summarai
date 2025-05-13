@@ -23,19 +23,17 @@ function isGenericSummary(summary) {
 }
 
 /**
- * Gets nomenclature notes from the nomenclature file
- * @returns {string} - Nomenclature note text
+ * Gets nomenclature prompt to help Whisper with domain-specific terms
+ * @returns {string} - Nomenclature prompt text
  */
 export function getNomenclatureNote() {
-  const NOMENCLATURE_PATH = './nomenclature.txt';
-  let terms = '';
   try {
-    terms = fs.readFileSync(NOMENCLATURE_PATH, 'utf8').trim();
+    const terms = fs.readFileSync('./nomenclature.txt', 'utf8').trim();
+    if (!terms) return '';
+    return `\n\n---\nThe following is a list of terms, product names, or jargon that may appear in the transcript. Please use this list to help interpret, spell, or summarize the content accurately.\n\n${terms}\n---\n`;
   } catch {
     return '';
   }
-  if (!terms) return '';
-  return `\n\n---\nThe following is a list of terms, product names, or jargon that may appear in the transcript. Please use this list to help interpret, spell, or summarize the content accurately.\n\n${terms}\n---\n`;
 }
 
 /**
@@ -108,7 +106,7 @@ function getSingleTargetDir(keywordsInSummary, outputDir) {
  * @param {string} recordingDateTimePrefix - Formatted date/time prefix
  * @param {string} recordingDateTime - ISO formatted date/time
  * @param {string} outputDir - Base output directory
- * @returns {Promise<Object>} - Result with finalName and targetDir
+ * @returns {Promise<Object>} - Result with finalName, targetDir, and mdFilePath
  */
 export async function sendToClaude(transcript, m4aFilePath, recordingDateTimePrefix, recordingDateTime, outputDir) {
   if (!ANTHROPIC_API_KEY) {
@@ -195,15 +193,15 @@ export async function sendToClaude(transcript, m4aFilePath, recordingDateTimePre
   if (homeDir && m4aFilePath.startsWith(homeDir)) {
     displayAudioPath = m4aFilePath.replace(homeDir, '~');
   }
+  // Remove raw transcript section, only include Claude response and basic metadata
   fs.writeFileSync(
     mdFile,
     claudeText.trim() +
-    `\n\nOriginal audio file: "${displayAudioPath}"\nRecording date/time: ${recordingDateTime}\n` +
-    `\n# Transcription\n\n${transcript}\n`
+    `\n\nOriginal audio file: "${displayAudioPath}"\nRecording date/time: ${recordingDateTime}\n`
   );
   const m4aDest = path.join(targetDir, `${finalName}.m4a`);
   fs.copyFileSync(m4aFilePath, m4aDest);
   console.log(`Claude output written to: ${mdFile}`);
   console.log(`Voice memo audio copied to: ${m4aDest}`);
-  return { finalName, targetDir };
+  return { finalName, targetDir, mdFilePath: mdFile };
 }
