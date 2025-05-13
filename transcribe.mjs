@@ -126,10 +126,12 @@ async function transcribeLatestVoiceMemo() {
 }
 
 // Exportable main workflow for automation
-export async function processVoiceMemo(filePath) {
+export async function processVoiceMemo(filePath, forceVideoMode = false) {
   const originalFileName = path.basename(filePath);
   let recordingDateTime = null;
   let recordingDateTimePrefix = null;
+  
+  // Try to extract date/time from filename pattern (common for voice memos)
   const dtMatch = originalFileName.match(/(\d{8})[ _-](\d{6})/);
   if (dtMatch) {
     const [_, ymd, hms] = dtMatch;
@@ -141,12 +143,26 @@ export async function processVoiceMemo(filePath) {
     const min = hms.slice(2, 4);
     const sec = hms.slice(4, 6);
     recordingDateTime = `${year}-${month}-${day}T${hour}:${min}:${sec}-07:00`;
+  } else {
+    // For files without timestamp in name, get the current time
+    console.log('No datetime pattern found in filename, using current time');
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hour = String(now.getHours()).padStart(2, '0');
+    const min = String(now.getMinutes()).padStart(2, '0');
+    const sec = String(now.getSeconds()).padStart(2, '0');
+    
+    // Format for display and filename
+    recordingDateTimePrefix = `${year}${month}${day}_${hour}:${min}:${sec}`;
+    recordingDateTime = now.toISOString();
   }
   // Always convert to temp AAC
   const tempDir = path.join(path.dirname(filePath), 'temp');
-  const tempAACPath = await convertToTempAAC(filePath, tempDir);
+  const tempAACPath = await convertToTempAAC(filePath, tempDir, forceVideoMode);
   let usedTemp = true;
-  console.log('Processing voice memo:', originalFileName);
+  console.log('Processing file:', originalFileName);
   try {
     // Use verbose mode to get timestamps and detailed JSON
     const transcriptionData = await transcribeWithWhisper(tempAACPath, true);
@@ -205,9 +221,83 @@ function formatTimestamp(seconds) {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
 }
 
+// Parse command line arguments to check for a directly specified file and options
+function parseCommandLineArgs() {
+  const args = process.argv.slice(2);
+  const result = {
+    options: {
+      forceVideoMode: false // Default: auto-detect file type
+    }
+  };
+  
+  // Process all arguments
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    
+    // Check for options flags
+    if (arg.startsWith('--')) {
+      const option = arg.slice(2).toLowerCase();
+      switch (option) {
+        case 'video':
+          result.options.forceVideoMode = true;
+          console.log('Video mode enabled: will force audio extraction');
+          break;
+        case 'help':
+          showHelp();
+          return null;
+        default:
+          console.warn(`Unknown option: ${arg}`);
+          break;
+      }
+      continue;
+    }
+    
+    // First non-option argument is assumed to be the file path
+    if (!result.filePath) {
+      if (fs.existsSync(arg)) {
+        result.filePath = arg;
+      } else {
+        console.error(`Error: File not found: ${arg}`);
+        return null;
+      }
+    }
+  }
+  
+  return result.filePath ? result : null;
+}
+
+// Display help information
+function showHelp() {
+  console.log(`
+Usage: node transcribe.mjs [options] [file_path]
+
+Options:
+  --video      Force video mode (extract audio from video)
+  --help       Show this help
+
+Examples:
+  node transcribe.mjs                    # Interactive mode
+  node transcribe.mjs recording.m4a      # Process specific audio file
+  node transcribe.mjs --video video.mp4  # Process video file
+`);
+}
+
 // Run if called directly
 if (import.meta.url === `file://${process.argv[1]}`) {
-  transcribeLatestVoiceMemo();
+  const args = parseCommandLineArgs();
+  if (args && args.filePath) {
+    // Direct file processing mode
+    console.log(`Processing file: ${args.filePath}`);
+    // Pass video mode flag as a separate parameter
+    const videoMode = args.options?.forceVideoMode || false;
+    processVoiceMemo(args.filePath, videoMode);
+  } else if (args === null && process.argv.length > 2) {
+    // Arguments were provided but invalid (help shown or error occurred)
+    // Do nothing, as error messages or help already displayed
+  } else {
+    // Interactive mode
+    transcribeLatestVoiceMemo();
+  }
 }
 
 export { transcribeLatestVoiceMemo };
