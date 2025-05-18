@@ -126,7 +126,7 @@ async function transcribeLatestVoiceMemo() {
 }
 
 // Exportable main workflow for automation
-export async function processVoiceMemo(filePath, forceVideoMode = false) {
+export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQuality = false } = {}) {
   const originalFileName = path.basename(filePath);
   let recordingDateTime = null;
   let recordingDateTimePrefix = null;
@@ -160,7 +160,10 @@ export async function processVoiceMemo(filePath, forceVideoMode = false) {
   }
   // Always convert to temp AAC
   const tempDir = path.join(path.dirname(filePath), 'temp');
-  const tempAACPath = await convertToTempAAC(filePath, tempDir, forceVideoMode);
+  const tempAACPath = await convertToTempAAC(filePath, tempDir, {
+    forceAudioExtraction: forceVideoMode,
+    lowQuality: lowQuality
+  });
   let usedTemp = true;
   console.log('Processing file:', originalFileName);
   try {
@@ -226,7 +229,8 @@ function parseCommandLineArgs() {
   const args = process.argv.slice(2);
   const result = {
     options: {
-      forceVideoMode: false // Default: auto-detect file type
+      forceVideoMode: false, // Default: auto-detect file type
+      lowQuality: false      // Default: use normal quality
     }
   };
   
@@ -245,6 +249,10 @@ function parseCommandLineArgs() {
         case 'help':
           showHelp();
           return null;
+        case 'low':
+          result.options.lowQuality = true;
+          console.log('Low quality mode enabled: will use more aggressive compression');
+          break;
         default:
           console.warn(`Unknown option: ${arg}`);
           break;
@@ -273,6 +281,7 @@ Usage: node transcribe.mjs [options] [file_path]
 
 Options:
   --video      Force video mode (extract audio from video)
+  --low        Use more aggressive compression (smaller files, lower quality)
   --help       Show this help
 
 Examples:
@@ -288,9 +297,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (args && args.filePath) {
     // Direct file processing mode
     console.log(`Processing file: ${args.filePath}`);
-    // Pass video mode flag as a separate parameter
-    const videoMode = args.options?.forceVideoMode || false;
-    processVoiceMemo(args.filePath, videoMode);
+    // Pass options object
+    processVoiceMemo(args.filePath, {
+      forceVideoMode: args.options?.forceVideoMode || false,
+      lowQuality: args.options?.lowQuality || false
+    });
   } else if (args === null && process.argv.length > 2) {
     // Arguments were provided but invalid (help shown or error occurred)
     // Do nothing, as error messages or help already displayed

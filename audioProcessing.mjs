@@ -31,10 +31,12 @@ async function isVideoFile(filePath) {
  * Converts an audio or video file to a compressed AAC format optimized for transcription
  * @param {string} inputPath - Path to the input audio or video file
  * @param {string} tempDir - Directory to store temporary files
- * @param {boolean} [forceAudioExtraction=false] - Force audio extraction mode even for audio files
+ * @param {Object} [options] - Conversion options
+ * @param {boolean} [options.forceAudioExtraction=false] - Force audio extraction mode even for audio files
+ * @param {boolean} [options.lowQuality=false] - Use more aggressive compression (smaller files, lower quality)
  * @returns {Promise<string>} - Path to the converted audio file
  */
-export async function convertToTempAAC(inputPath, tempDir, forceAudioExtraction = false) {
+export async function convertToTempAAC(inputPath, tempDir, { forceAudioExtraction = false, lowQuality = false } = {}) {
   const tempAAC = path.join(tempDir, 'temp.m4a');
   // Ensure tempDir exists
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
@@ -50,13 +52,18 @@ export async function convertToTempAAC(inputPath, tempDir, forceAudioExtraction 
   
   try {
     let cmd;
+    // Set quality parameters based on quality setting
+    const bitrate = lowQuality ? '24k' : '48k';
+    const samplerate = lowQuality ? '8000' : '16000';
+    
     if (isVideo) {
       // For video files: extract audio and optimize for speech
-      cmd = `ffmpeg -i "${inputPath}" -vn -c:a aac -b:a 48k -ar 16000 -ac 1 "${tempAAC}" -y`;
-      console.log('Extracting audio from video file...');
+      cmd = `ffmpeg -i "${inputPath}" -vn -c:a aac -b:a ${bitrate} -ar ${samplerate} -ac 1 "${tempAAC}" -y`;
+      console.log(`Extracting audio from video file (${lowQuality ? 'low' : 'normal'} quality)...`);
     } else {
       // For audio files: just optimize for speech
-      cmd = `ffmpeg -i "${inputPath}" -c:a aac -b:a 48k -ar 16000 -ac 1 "${tempAAC}" -y`;
+      cmd = `ffmpeg -i "${inputPath}" -c:a aac -b:a ${bitrate} -ar ${samplerate} -ac 1 "${tempAAC}" -y`;
+      console.log(`Processing audio file (${lowQuality ? 'low' : 'normal'} quality)...`);
     }
     
     await exec(cmd);

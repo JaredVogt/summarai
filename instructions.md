@@ -13,5 +13,6 @@ The content being sent is the transcript of a voice memo. Follow the instruction
 - If you are unsure about a term, use your best judgment based on the nomenclature and context.
 - Do not include generic phrases like "Voice Memo Summary" in the summary.
 - Format your output in markdown, with clear section headers for Summary, In-depth Summarization, and Action Items.
+- Special note: Do not assume that the transcript is only about one related topic. There are times where multiple very unrelated things are discussed. In this case, separate them into different summaries.
 
 You may edit or expand these instructions as needed to improve the quality and relevance of the summaries.
