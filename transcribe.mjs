@@ -9,7 +9,8 @@ import { stdin as input, stdout as output } from 'process';
 import { promisify } from 'util';
 import { sendToClaude } from './claudeAPI.mjs';
 import { transcribeWithWhisper } from './whisperAPI.mjs';
-import { convertToTempAAC, cleanupTempDir } from './audioProcessing.mjs';
+import { transcribeWithScribe, createSegmentsContent } from './scribeAPI.mjs';
+import { convertToTempAAC, cleanupTempDir, splitAudioFile } from './audioProcessing.mjs';
 import { startSpinner, sanitizeFilename } from './utils.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -69,6 +70,17 @@ async function transcribeLatestVoiceMemo() {
   } catch {
     count = 1;
   }
+  
+  // Ask user which transcription service to use
+  let transcriptionService = 'whisper';
+  try {
+    const serviceAnswer = await rl.question('Which transcription service would you like to use? (1: OpenAI Whisper, 2: ElevenLabs Scribe) [1]: ');
+    if (serviceAnswer === '2') {
+      transcriptionService = 'scribe';
+    }
+  } catch {
+    transcriptionService = 'whisper';
+  }
   let files = [];
   try {
     files = await getLatestVoiceMemos(count);
@@ -122,11 +134,11 @@ async function transcribeLatestVoiceMemo() {
   rl.close();
   
   // Process the selected file using processVoiceMemo
-  await processVoiceMemo(files[selected].fullPath);
+  await processVoiceMemo(files[selected].fullPath, { transcriptionService });
 }
 
 // Exportable main workflow for automation
-export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQuality = false } = {}) {
+export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQuality = false, transcriptionService = 'whisper' } = {}) {
   const originalFileName = path.basename(filePath);
   let recordingDateTime = null;
   let recordingDateTimePrefix = null;
@@ -167,25 +179,94 @@ export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQu
   let usedTemp = true;
   console.log('Processing file:', originalFileName);
   try {
-    // Use verbose mode to get timestamps and detailed JSON
-    const transcriptionData = await transcribeWithWhisper(tempAACPath, true);
+    // Get file size for logging
+    const stats = fs.statSync(tempAACPath);
+    const fileSizeMB = stats.size / (1024 * 1024);
     
-    // Extract the text transcript from the response
-    const transcript = transcriptionData.text;
+    console.log(`Using transcription service: ${transcriptionService === 'whisper' ? 'OpenAI Whisper' : 'ElevenLabs Scribe'}`);
     
-    // Create a timestamped segments text with lowercase heading
-    let segmentsContent = "## transcription with timestamps\n";
-    if (transcriptionData.segments && Array.isArray(transcriptionData.segments)) {
-      transcriptionData.segments.forEach((segment, i) => {
-        const startTime = formatTimestamp(segment.start);
-        const endTime = formatTimestamp(segment.end);
-        segmentsContent += `[${startTime} - ${endTime}] ${segment.text}\n`;
+    let transcriptionData;
+    let transcript;
+    let segmentsContent;
+    
+    if (transcriptionService === 'whisper') {
+      // Whisper has a 25MB file size limit
+      const maxSizeMB = 22; // 22MB practical limit for Whisper API
+      let audioPathsToProcess;
+      const chunksDir = path.join(tempDir, 'chunks');
+      
+      if (fileSizeMB > maxSizeMB) {
+        console.log(`Audio file size (${fileSizeMB.toFixed(2)} MB) exceeds Whisper API limit of ${maxSizeMB} MB`);
+        // Split the audio file into chunks
+        audioPathsToProcess = await splitAudioFile(tempAACPath, chunksDir, maxSizeMB);
+        console.log(`Split audio into ${audioPathsToProcess.length} chunks for processing`);
+      } else {
+        audioPathsToProcess = [tempAACPath];
+        console.log(`Audio file size (${fileSizeMB.toFixed(2)} MB) is under the limit, processing as a single file`);
+      }
+      
+      // Use verbose mode to get timestamps and detailed JSON
+      transcriptionData = await transcribeWithWhisper(audioPathsToProcess, true);
+      
+      // Extract the text transcript from the response
+      transcript = transcriptionData.text;
+      
+      // Create a timestamped segments text with lowercase heading
+      segmentsContent = "## transcription with timestamps\n";
+      if (transcriptionData.segments && Array.isArray(transcriptionData.segments)) {
+        transcriptionData.segments.forEach((segment, i) => {
+          const startTime = formatTimestamp(segment.start);
+          const endTime = formatTimestamp(segment.end);
+          segmentsContent += `[${startTime} - ${endTime}] ${segment.text}\n`;
+        });
+      }
+    } else {
+      // ElevenLabs Scribe can handle files up to 1GB
+      console.log(`Audio file size (${fileSizeMB.toFixed(2)} MB) - ElevenLabs Scribe can handle up to 1GB`);
+      
+      // Ask for additional options if using Scribe
+      const rl = readline.createInterface({ input, output });
+      let model = 'scribe_v1';
+      try {
+        const modelAnswer = await rl.question('Which Scribe model would you like to use? (1: scribe_v1, 2: scribe_v1_experimental) [1]: ');
+        if (modelAnswer === '2') {
+          model = 'scribe_v1_experimental';
+        }
+      } catch {
+        // Use default
+      }
+      
+      let maxSpeakers = null;
+      try {
+        const speakersAnswer = await rl.question('Maximum number of speakers to detect (Enter for auto): ');
+        const speakersNum = parseInt(speakersAnswer, 10);
+        if (!isNaN(speakersNum) && speakersNum > 0 && speakersNum <= 32) {
+          maxSpeakers = speakersNum;
+        }
+      } catch {
+        // Use default (auto)
+      }
+      rl.close();
+      
+      // Use ElevenLabs Scribe for transcription
+      transcriptionData = await transcribeWithScribe(tempAACPath, {
+        model,
+        maxSpeakers,
+        tagAudioEvents: true,
+        verbose: true
       });
+      
+      // Extract the text transcript
+      transcript = transcriptionData.text;
+      
+      // Create segments content using the helper function
+      segmentsContent = createSegmentsContent(transcriptionData);
     }
     
-    // Print the timestamped transcription instead of just the text
-    console.log('Transcription:');
-    console.log(segmentsContent);
+    // Don't print the full transcript to console to reduce output verbosity
+    console.log('Transcription processed successfully.');
+    // Just show transcript length as indicator
+    console.log(`Transcript length: ${transcript.length} characters, ${transcript.split(/\s+/).length} words`);
   
     // Send to Claude and write output (markdown + audio)
     // Pass the original .m4a path, not the temp AAC
@@ -227,67 +308,83 @@ function formatTimestamp(seconds) {
 // Parse command line arguments to check for a directly specified file and options
 function parseCommandLineArgs() {
   const args = process.argv.slice(2);
-  const result = {
-    options: {
-      forceVideoMode: false, // Default: auto-detect file type
-      lowQuality: false      // Default: use normal quality
-    }
-  };
-  
-  // Process all arguments
+  if (args.length === 0) {
+    return null;
+  }
+
+  let filePath = null;
+  let forceVideoMode = false;
+  let lowQuality = false;
+  let showHelp = false;
+  let transcriptionService = 'whisper'; // Default to Whisper
+
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    
-    // Check for options flags
-    if (arg.startsWith('--')) {
-      const option = arg.slice(2).toLowerCase();
-      switch (option) {
-        case 'video':
-          result.options.forceVideoMode = true;
-          console.log('Video mode enabled: will force audio extraction');
-          break;
-        case 'help':
-          showHelp();
-          return null;
-        case 'low':
-          result.options.lowQuality = true;
-          console.log('Low quality mode enabled: will use more aggressive compression');
-          break;
-        default:
-          console.warn(`Unknown option: ${arg}`);
-          break;
-      }
-      continue;
-    }
-    
-    // First non-option argument is assumed to be the file path
-    if (!result.filePath) {
-      if (fs.existsSync(arg)) {
-        result.filePath = arg;
-      } else {
-        console.error(`Error: File not found: ${arg}`);
-        return null;
-      }
+    if (arg === '--help' || arg === '-h') {
+      showHelp = true;
+    } else if (arg === '--video' || arg === '-v') {
+      forceVideoMode = true;
+      console.log('Video mode enabled: will force audio extraction');
+    } else if (arg === '--low-quality' || arg === '-l') {
+      lowQuality = true;
+      console.log('Low quality mode enabled: will use more aggressive compression');
+    } else if (arg === '--scribe' || arg === '-s') {
+      transcriptionService = 'scribe';
+      console.log('Using ElevenLabs Scribe for transcription');
+    } else if (arg === '--whisper' || arg === '-w') {
+      transcriptionService = 'whisper';
+      console.log('Using OpenAI Whisper for transcription');
+    } else if (!arg.startsWith('-') && !filePath) {
+      filePath = arg;
     }
   }
-  
-  return result.filePath ? result : null;
+
+  if (showHelp) {
+    showHelp();
+    process.exit(0);
+  }
+
+  if (!filePath) {
+    return null;
+  }
+
+  // Convert relative path to absolute if needed
+  if (!path.isAbsolute(filePath)) {
+    filePath = path.resolve(process.cwd(), filePath);
+  }
+
+  // Verify file exists
+  if (!fs.existsSync(filePath)) {
+    console.error(`Error: File not found: ${filePath}`);
+    process.exit(1);
+  }
+
+  return { filePath, forceVideoMode, lowQuality, transcriptionService };
 }
 
 // Display help information
 function showHelp() {
   console.log(`
+Voice Memo Transcription Utility
+
 Usage: node transcribe.mjs [options] [file_path]
 
 Options:
-  --video      Force video mode (extract audio from video)
-  --low        Use more aggressive compression (smaller files, lower quality)
-  --help       Show this help
+  --help, -h       Show this help message
+  --video, -v      Force video mode (extract audio from video)
+  --low-quality, -l Use lower quality audio for faster processing
+  --whisper, -w    Use OpenAI Whisper for transcription (default)
+  --scribe, -s     Use ElevenLabs Scribe for transcription
+
+Transcription Services:
+  - OpenAI Whisper: 25MB file size limit, chunks larger files automatically
+  - ElevenLabs Scribe: Up to 1GB files, better speaker detection
 
 Examples:
-  node transcribe.mjs                    # Interactive mode
-  node transcribe.mjs recording.m4a      # Process specific audio file
-  node transcribe.mjs --video video.mp4  # Process video file
+  node transcribe.mjs                        # Interactive mode
+  node transcribe.mjs recording.m4a          # Process specific file with Whisper
+  node transcribe.mjs --video recording.mp4  # Process video file with Whisper
+  node transcribe.mjs --scribe large.mp3     # Process with ElevenLabs Scribe
 `);
 }
 

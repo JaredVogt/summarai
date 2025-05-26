@@ -144,8 +144,12 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
   let claudeText = '';
   try {
     const response = await axios.post('https://api.anthropic.com/v1/messages', {
-      model: 'claude-3-7-sonnet-20250219',
-      max_tokens: 1024,
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 16000,
+      thinking: {
+        type: 'enabled',
+        budget_tokens: 10000
+      },
       messages: [
         { role: 'user', content: prompt }
       ]
@@ -157,11 +161,52 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
       }
     });
     spinnerStop();
-    claudeText = response.data.content?.[0]?.text || response.data.completion || '[No content returned]';
+
+    // Log the full response data for debugging
+    console.log('[ClaudeAPI] Full response data:', JSON.stringify(response.data, null, 2));
+
+    // Extract content based on Messages API structure
+    // Find the content block with type: "text"
+    let textBlock = null;
+    if (response.data && response.data.content && Array.isArray(response.data.content)) {
+      textBlock = response.data.content.find(block => block.type === 'text');
+    }
+
+    if (textBlock && textBlock.text) {
+      claudeText = textBlock.text;
+    } else {
+      // Log if the expected content structure is not found
+      console.warn('[ClaudeAPI] Claude response did not contain a text block in the content array. Response data:', response.data);
+      claudeText = ''; // Default to empty string if no valid content
+    }
+
+    if (!claudeText.trim()) { // Check if claudeText is empty or only whitespace
+        claudeText = '[No content returned]'; // Set default if still empty after checks
+    }
+
   } catch (err) {
     spinnerStop();
-    console.error('Error from Claude:', err.response?.data || err.message);
-    return;
+    console.error('[ClaudeAPI] Error calling Claude API:');
+    if (err.response) {
+      // Axios error with a response from the server
+      console.error('Status:', err.response.status);
+      console.error('Headers:', JSON.stringify(err.response.headers, null, 2));
+      console.error('Data:', JSON.stringify(err.response.data, null, 2));
+    } else if (err.request) {
+      // Axios error where the request was made but no response was received
+      console.error('Request Error: No response received. Request details:', err.request);
+    } else {
+      // Other errors (e.g., setup issues)
+      console.error('Error Message:', err.message);
+    }
+    console.error('Full error object:', err);
+    return; // Exit if there's an error
+  }
+
+  // If claudeText is still '[No content returned]' or empty, log the prompt for review
+  if (claudeText === '[No content returned]' || !claudeText.trim()) {
+    console.warn('[ClaudeAPI] Claude returned no substantive content. Review the prompt:');
+    console.warn(prompt.substring(0, 1000) + (prompt.length > 1000 ? '...' : '')); // Log first 1000 chars of prompt
   }
 
   // Extract the summary after 'Summary:' (with or without brackets)

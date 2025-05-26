@@ -98,3 +98,60 @@ export function cleanupTempDir(tempDir) {
     }
   }
 }
+
+/**
+ * Splits a large audio file into smaller chunks of specified size
+ * @param {string} audioFilePath - Path to the audio file to split
+ * @param {string} outputDir - Directory to store the chunks
+ * @param {number} maxSizeMB - Maximum size in MB for each chunk
+ * @returns {Promise<string[]>} - Array of paths to the chunk files
+ */
+export async function splitAudioFile(audioFilePath, outputDir, maxSizeMB = 22) {
+  // Ensure output directory exists
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+  
+  // Get audio duration
+  const durationCmd = `ffprobe -v error -show_entries format=duration -of json "${audioFilePath}"`;
+  const { stdout: durationOutput } = await exec(durationCmd);
+  const duration = JSON.parse(durationOutput).format.duration;
+  
+  // Get file size
+  const stats = fs.statSync(audioFilePath);
+  const fileSizeMB = stats.size / (1024 * 1024);
+  
+  // If file is under the size limit, return the original path
+  if (fileSizeMB <= maxSizeMB) {
+    return [audioFilePath];
+  }
+  
+  console.log(`File size ${fileSizeMB.toFixed(2)} MB exceeds ${maxSizeMB} MB limit. Splitting into chunks...`);
+  
+  // Calculate number of chunks needed
+  const numberOfChunks = Math.ceil(fileSizeMB / maxSizeMB);
+  // Calculate duration of each chunk
+  const chunkDuration = Math.ceil(duration / numberOfChunks);
+  
+  const chunkPaths = [];
+  const stopSpinnerSplit = startSpinner('Splitting audio file into chunks...');
+  
+  try {
+    // Split the file into chunks
+    for (let i = 0; i < numberOfChunks; i++) {
+      const startTime = i * chunkDuration;
+      const chunkPath = path.join(outputDir, `chunk_${i.toString().padStart(3, '0')}.m4a`);
+      
+      // Use ffmpeg to extract chunk
+      const cmd = `ffmpeg -i "${audioFilePath}" -ss ${startTime} -t ${chunkDuration} -c:a aac -b:a 48k -ar 16000 -ac 1 "${chunkPath}" -y`;
+      await exec(cmd);
+      
+      chunkPaths.push(chunkPath);
+      console.log(`Created chunk ${i+1}/${numberOfChunks}: ${chunkPath}`);
+    }
+    stopSpinnerSplit();
+    return chunkPaths;
+  } catch (error) {
+    stopSpinnerSplit();
+    console.error('Error splitting audio file:', error.message);
+    throw new Error(`Failed to split audio file: ${error.message}`);
+  }
+}
