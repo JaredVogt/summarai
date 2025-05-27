@@ -21,8 +21,10 @@ export async function transcribeWithScribe(audioFilePath, options = {}) {
     language = null, // ISO-639-1 or ISO-639-3 code (auto-detect if null)
     tagAudioEvents = true, // Tag events like (laughter), (applause)
     maxSpeakers = null, // Max speakers (1-32, auto if null)
-    verbose = false // Whether to return verbose data
+    verbose = false, // Whether to return verbose data
   } = options;
+
+  const timeoutInSeconds = options.timeoutInSeconds || 300; // Timeout in seconds
 
   // Check file exists and validate size
   if (!fs.existsSync(audioFilePath)) {
@@ -131,7 +133,9 @@ export async function transcribeWithScribe(audioFilePath, options = {}) {
     // Call with file Blob
     const result = await elevenlabs.speechToText.convert({
       ...callSpecificOptions, // Use the modified options for testing
-      file: audioBlob // Pass the Blob object
+      file: audioBlob, // Pass the Blob object
+    }, {
+      timeoutInSeconds: timeoutInSeconds // Use timeoutInSeconds directly
     });
     
     stopSpinner();

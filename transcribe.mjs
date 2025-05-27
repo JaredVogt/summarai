@@ -61,7 +61,7 @@ function addToProcessHistory(filename, timestamp) {
   }
 }
 
-async function transcribeLatestVoiceMemo() {
+async function transcribeLatestVoiceMemo(transcriptionService) {
   const rl = readline.createInterface({ input, output });
   let count = 1;
   try {
@@ -71,16 +71,6 @@ async function transcribeLatestVoiceMemo() {
     count = 1;
   }
   
-  // Ask user which transcription service to use
-  let transcriptionService = 'whisper';
-  try {
-    const serviceAnswer = await rl.question('Which transcription service would you like to use? (1: OpenAI Whisper, 2: ElevenLabs Scribe) [1]: ');
-    if (serviceAnswer === '2') {
-      transcriptionService = 'scribe';
-    }
-  } catch {
-    transcriptionService = 'whisper';
-  }
   let files = [];
   try {
     files = await getLatestVoiceMemos(count);
@@ -89,20 +79,8 @@ async function transcribeLatestVoiceMemo() {
     rl.close();
     return;
   }
-  // Filter out already processed files
+  // Get processed filenames
   const processed = getProcessedFilenames();
-  files = files.filter(f => {
-    const originalFileName = path.basename(f.file);
-    // Check if this exact file has been processed before
-    const isProcessed = processed.has(originalFileName);
-    return !isProcessed;
-  });
-  if (!files.length) {
-    console.error('No unprocessed files found.');
-    rl.close();
-    return;
-  }
-
   console.log('\nRecent Voice Memos:');
   for (let i = 0; i < files.length; i++) {
     const { file, duration, date, gps } = files[i];
@@ -121,12 +99,30 @@ async function transcribeLatestVoiceMemo() {
     if (formattedDuration) info.push(`duration: ${formattedDuration}`);
     if (date) info.push(`date: ${date}`);
     if (gps) info.push(`gps: ${gps}`);
-    console.log(`${i + 1}. ${file}${info.length ? ' (' + info.join(', ') + ')' : ''}`);
+    const originalFileName = path.basename(file);
+    const isProcessed = processed.has(originalFileName);
+    console.log(`${i + 1}. ${file}${info.length ? ' (' + info.join(', ') + ')' : ''}${isProcessed ? ' (Processed)' : ''}`);
   }
 
   let selected = 0;
   try {
-    const sel = await rl.question('Select a file to transcribe (number): ');
+    const sel = await rl.question('Select a file to transcribe (number), or type "all" to re-process all: ');
+    if (sel.toLowerCase() === 'all') {
+      // Re-process all files
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const originalFileName = path.basename(file.file);
+        const isProcessed = processed.has(originalFileName);
+        if (isProcessed) {
+          console.log(`Re-processing: ${file.file}`);
+        } else {
+          console.log(`Processing: ${file.file}`);
+        }
+        await processVoiceMemo(file.fullPath, { transcriptionService });
+      }
+      rl.close();
+      return;
+    }
     selected = Math.max(1, Math.min(files.length, parseInt(sel, 10) || 1)) - 1;
   } catch {
     selected = 0;
@@ -138,7 +134,7 @@ async function transcribeLatestVoiceMemo() {
 }
 
 // Exportable main workflow for automation
-export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQuality = false, transcriptionService = 'whisper' } = {}) {
+export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQuality = false, transcriptionService = 'scribe' } = {}) {
   const originalFileName = path.basename(filePath);
   let recordingDateTime = null;
   let recordingDateTimePrefix = null;
@@ -309,19 +305,19 @@ function formatTimestamp(seconds) {
 function parseCommandLineArgs() {
   const args = process.argv.slice(2);
   if (args.length === 0) {
-    return null;
+    return { filePath: null, forceVideoMode: false, lowQuality: false, transcriptionService: 'scribe' };
   }
 
   let filePath = null;
   let forceVideoMode = false;
   let lowQuality = false;
-  let showHelp = false;
-  let transcriptionService = 'whisper'; // Default to Whisper
+  let displayHelp = false;
+  let transcriptionService = 'scribe'; // Default to Scribe
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--help' || arg === '-h') {
-      showHelp = true;
+      displayHelp = true;
     } else if (arg === '--video' || arg === '-v') {
       forceVideoMode = true;
       console.log('Video mode enabled: will force audio extraction');
@@ -339,22 +335,22 @@ function parseCommandLineArgs() {
     }
   }
 
-  if (showHelp) {
+  if (displayHelp) {
     showHelp();
     process.exit(0);
   }
 
   if (!filePath) {
-    return null;
+    return { filePath: null, forceVideoMode, lowQuality, transcriptionService };
   }
 
   // Convert relative path to absolute if needed
-  if (!path.isAbsolute(filePath)) {
+  if (filePath && !path.isAbsolute(filePath)) {
     filePath = path.resolve(process.cwd(), filePath);
   }
 
-  // Verify file exists
-  if (!fs.existsSync(filePath)) {
+  // Verify file exists if a filePath is provided
+  if (filePath && !fs.existsSync(filePath)) {
     console.error(`Error: File not found: ${filePath}`);
     process.exit(1);
   }
@@ -373,38 +369,36 @@ Options:
   --help, -h       Show this help message
   --video, -v      Force video mode (extract audio from video)
   --low-quality, -l Use lower quality audio for faster processing
-  --whisper, -w    Use OpenAI Whisper for transcription (default)
-  --scribe, -s     Use ElevenLabs Scribe for transcription
+  --whisper, -w    Use OpenAI Whisper for transcription
+  --scribe, -s     Use ElevenLabs Scribe for transcription (default)
 
 Transcription Services:
-  - OpenAI Whisper: 25MB file size limit, chunks larger files automatically
   - ElevenLabs Scribe: Up to 1GB files, better speaker detection
+  - OpenAI Whisper: 25MB file size limit, chunks larger files automatically
 
 Examples:
   node transcribe.mjs                        # Interactive mode
-  node transcribe.mjs recording.m4a          # Process specific file with Whisper
-  node transcribe.mjs --video recording.mp4  # Process video file with Whisper
-  node transcribe.mjs --scribe large.mp3     # Process with ElevenLabs Scribe
+  node transcribe.mjs recording.m4a          # Process specific file with Scribe
+  node transcribe.mjs --video recording.mp4  # Process video file with Scribe
+  node transcribe.mjs --whisper large.mp3     # Process with OpenAI Whisper
 `);
 }
 
 // Run if called directly
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const args = parseCommandLineArgs();
-  if (args && args.filePath) {
+  const parsedArgs = parseCommandLineArgs(); // This will exit if --help is passed
+
+  if (parsedArgs.filePath) {
     // Direct file processing mode
-    console.log(`Processing file: ${args.filePath}`);
-    // Pass options object
-    processVoiceMemo(args.filePath, {
-      forceVideoMode: args.options?.forceVideoMode || false,
-      lowQuality: args.options?.lowQuality || false
+    console.log(`Processing file: ${parsedArgs.filePath}`);
+    processVoiceMemo(parsedArgs.filePath, {
+      forceVideoMode: parsedArgs.forceVideoMode,
+      lowQuality: parsedArgs.lowQuality,
+      transcriptionService: parsedArgs.transcriptionService
     });
-  } else if (args === null && process.argv.length > 2) {
-    // Arguments were provided but invalid (help shown or error occurred)
-    // Do nothing, as error messages or help already displayed
   } else {
-    // Interactive mode
-    transcribeLatestVoiceMemo();
+    // Interactive mode (no file path provided, or only flags like --reprocess were passed)
+    transcribeLatestVoiceMemo(parsedArgs.transcriptionService);
   }
 }
 
