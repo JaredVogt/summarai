@@ -3,7 +3,7 @@ import FormData from 'form-data';
 import fs from 'fs';
 import { startSpinner } from './utils.mjs';
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+// Don't read the API key at import time, will access process.env directly when needed
 
 /**
  * Gets nomenclature prompt to help Whisper with domain-specific terms
@@ -32,6 +32,9 @@ export function getNomenclaturePrompt() {
  * @returns {Promise<string|Object>} - Transcription text or full JSON response with timestamps
  */
 async function transcribeSingleFile(audioFilePath, verbose = false) {
+  // Get API key at runtime, after dotenv has loaded it
+  const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+  
   if (!OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY not set');
   }

@@ -1,7 +1,22 @@
+import dotenv from 'dotenv';
+import os from 'os';
+import path from 'path';
+import fs from 'fs';
+
+// Path to .env file in home directory
+const envPath = path.join(os.homedir(), '.env');
+
+// Check if .env file exists
+if (!fs.existsSync(envPath)) {
+  console.error(`ERROR: .env file not found in home directory (${envPath})`);
+  process.exit(1);
+}
+
+// Load environment variables from .env file
+dotenv.config({ path: envPath });
+
 import axios from 'axios';
 import FormData from 'form-data';
-import fs from 'fs';
-import path from 'path';
 import { fileURLToPath } from 'url';
 import { getLatestVoiceMemos } from './getLatestVoiceMemo.mjs';
 import readline from 'readline/promises';

@@ -7,7 +7,7 @@ import { startSpinner, sanitizeFilename } from './utils.mjs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+// Don't read the API key at import time, will access process.env directly when needed
 
 /**
  * Checks if a summary appears to be generic
@@ -123,6 +123,9 @@ function getContentTypeFromPath(filePath) {
  * @returns {Promise<Object>} - Result with finalName, targetDir, and mdFilePath
  */
 export async function sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, outputDir) {
+  // Get API key at runtime, after dotenv has loaded it
+  const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+  
   if (!ANTHROPIC_API_KEY) {
     console.error('ANTHROPIC_API_KEY not set.');
     return;

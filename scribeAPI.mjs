@@ -3,7 +3,7 @@ import path from 'path';
 import { startSpinner } from './utils.mjs';
 import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
 
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+// Don't read the API key at import time, will access process.env directly when needed
 
 /**
  * Transcribe audio/video using ElevenLabs Scribe API
@@ -12,6 +12,9 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
  * @returns {Promise<Object>} - Transcription result with text and detailed info
  */
 export async function transcribeWithScribe(audioFilePath, options = {}) {
+  // Get API key at runtime, after dotenv has loaded it
+  const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+  
   if (!ELEVENLABS_API_KEY) {
     throw new Error('ELEVENLABS_API_KEY not set');
   }
