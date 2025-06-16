@@ -149,7 +149,7 @@ async function transcribeLatestVoiceMemo(transcriptionService) {
 }
 
 // Exportable main workflow for automation
-export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQuality = false, transcriptionService = 'scribe' } = {}) {
+export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQuality = false, transcriptionService = 'scribe', silentMode = false, model = null, maxSpeakers = null } = {}) {
   const originalFileName = path.basename(filePath);
   let recordingDateTime = null;
   let recordingDateTimePrefix = null;
@@ -235,34 +235,40 @@ export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQu
       // ElevenLabs Scribe can handle files up to 1GB
       console.log(`Audio file size (${fileSizeMB.toFixed(2)} MB) - ElevenLabs Scribe can handle up to 1GB`);
       
-      // Ask for additional options if using Scribe
-      const rl = readline.createInterface({ input, output });
-      let model = 'scribe_v1';
-      try {
-        const modelAnswer = await rl.question('Which Scribe model would you like to use? (1: scribe_v1, 2: scribe_v1_experimental) [1]: ');
-        if (modelAnswer === '2') {
-          model = 'scribe_v1_experimental';
-        }
-      } catch {
-        // Use default
-      }
+      // If in silent mode, use preset values; otherwise ask for options
+      let selectedModel = model || 'scribe_v1';
+      let selectedMaxSpeakers = maxSpeakers;
       
-      let maxSpeakers = null;
-      try {
-        const speakersAnswer = await rl.question('Maximum number of speakers to detect (Enter for auto): ');
-        const speakersNum = parseInt(speakersAnswer, 10);
-        if (!isNaN(speakersNum) && speakersNum > 0 && speakersNum <= 32) {
-          maxSpeakers = speakersNum;
+      if (!silentMode) {
+        // Only ask for options if not in silent mode
+        const rl = readline.createInterface({ input, output });
+        try {
+          const modelAnswer = await rl.question('Which Scribe model would you like to use? (1: scribe_v1, 2: scribe_v1_experimental) [1]: ');
+          if (modelAnswer === '2') {
+            selectedModel = 'scribe_v1_experimental';
+          }
+        } catch {
+          // Use default
         }
-      } catch {
-        // Use default (auto)
+        
+        try {
+          const speakersAnswer = await rl.question('Maximum number of speakers to detect (Enter for auto): ');
+          const speakersNum = parseInt(speakersAnswer, 10);
+          if (!isNaN(speakersNum) && speakersNum > 0 && speakersNum <= 32) {
+            selectedMaxSpeakers = speakersNum;
+          }
+        } catch {
+          // Use default (auto)
+        }
+        rl.close();
+      } else {
+        console.log(`Silent mode: Using model ${selectedModel} with auto speaker detection`);
       }
-      rl.close();
       
       // Use ElevenLabs Scribe for transcription
       transcriptionData = await transcribeWithScribe(tempAACPath, {
-        model,
-        maxSpeakers,
+        model: selectedModel,
+        maxSpeakers: selectedMaxSpeakers,
         tagAudioEvents: true,
         verbose: true
       });
@@ -319,91 +325,171 @@ function formatTimestamp(seconds) {
 // Parse command line arguments to check for a directly specified file and options
 function parseCommandLineArgs() {
   const args = process.argv.slice(2);
-  if (args.length === 0) {
-    return { filePath: null, forceVideoMode: false, lowQuality: false, transcriptionService: 'scribe' };
+
+  // Default values
+  const result = {
+    filePath: null,
+    forceVideoMode: false,
+    lowQuality: false,
+    transcriptionService: 'scribe',
+    silentMode: false,
+    displayHelp: false
+  };
+
+  // First check for silent mode before processing other flags
+  if (args.includes('--silent')) {
+    result.silentMode = true;
+    console.log('Silent mode enabled: auto-processing newest unprocessed voice memo');
   }
 
-  let filePath = null;
-  let forceVideoMode = false;
-  let lowQuality = false;
-  let displayHelp = false;
-  let transcriptionService = 'scribe'; // Default to Scribe
-
+  // Process each argument
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
+
     if (arg === '--help' || arg === '-h') {
-      displayHelp = true;
+      result.displayHelp = true;
     } else if (arg === '--video' || arg === '-v') {
-      forceVideoMode = true;
-      console.log('Video mode enabled: will force audio extraction');
+      result.forceVideoMode = true;
+      if (!result.silentMode) console.log('Video mode enabled: will force audio extraction');
     } else if (arg === '--low-quality' || arg === '-l') {
-      lowQuality = true;
-      console.log('Low quality mode enabled: will use more aggressive compression');
+      result.lowQuality = true;
+      if (!result.silentMode) console.log('Low quality mode enabled: will use more aggressive compression');
     } else if (arg === '--scribe' || arg === '-s') {
-      transcriptionService = 'scribe';
-      console.log('Using ElevenLabs Scribe for transcription');
+      result.transcriptionService = 'scribe';
+      if (!result.silentMode) console.log('Using ElevenLabs Scribe for transcription');
     } else if (arg === '--whisper' || arg === '-w') {
-      transcriptionService = 'whisper';
-      console.log('Using OpenAI Whisper for transcription');
-    } else if (!arg.startsWith('-') && !filePath) {
-      filePath = arg;
+      result.transcriptionService = 'whisper';
+      if (!result.silentMode) console.log('Using OpenAI Whisper for transcription');
+    } else if (arg === '--silent') {
+      // Already handled above
+    } else if (!arg.startsWith('-') && !result.filePath) {
+      result.filePath = arg;
     }
   }
 
-  if (displayHelp) {
+  if (result.displayHelp) {
     showHelp();
     process.exit(0);
   }
 
-  if (!filePath) {
-    return { filePath: null, forceVideoMode, lowQuality, transcriptionService };
-  }
-
   // Convert relative path to absolute if needed
-  if (filePath && !path.isAbsolute(filePath)) {
-    filePath = path.resolve(process.cwd(), filePath);
+  if (result.filePath && !path.isAbsolute(result.filePath)) {
+    result.filePath = path.resolve(process.cwd(), result.filePath);
   }
 
   // Verify file exists if a filePath is provided
-  if (filePath && !fs.existsSync(filePath)) {
-    console.error(`Error: File not found: ${filePath}`);
+  if (result.filePath && !fs.existsSync(result.filePath)) {
+    console.error(`Error: File not found: ${result.filePath}`);
     process.exit(1);
   }
 
-  return { filePath, forceVideoMode, lowQuality, transcriptionService };
+  return result;
 }
 
 // Display help information
 function showHelp() {
   console.log(`
-Voice Memo Transcription Utility
+Voice Memo Transcription Tool
 
-Usage: node transcribe.mjs [options] [file_path]
+Usage: node transcribe.mjs [options] [file]
 
 Options:
-  --help, -h       Show this help message
-  --video, -v      Force video mode (extract audio from video)
-  --low-quality, -l Use lower quality audio for faster processing
-  --whisper, -w    Use OpenAI Whisper for transcription
-  --scribe, -s     Use ElevenLabs Scribe for transcription (default)
-
-Transcription Services:
-  - ElevenLabs Scribe: Up to 1GB files, better speaker detection
-  - OpenAI Whisper: 25MB file size limit, chunks larger files automatically
+  --help, -h          Show this help message
+  --video, -v         Force video mode (extract audio from video)
+  --low-quality, -l   Use more aggressive compression for larger files
+  --whisper, -w       Use OpenAI Whisper for transcription
+  --scribe, -s        Use ElevenLabs Scribe for transcription (default)
+  --silent            Silent mode: auto-process newest unprocessed voice memo
 
 Examples:
-  node transcribe.mjs                        # Interactive mode
-  node transcribe.mjs recording.m4a          # Process specific file with Scribe
-  node transcribe.mjs --video recording.mp4  # Process video file with Scribe
-  node transcribe.mjs --whisper large.mp3     # Process with OpenAI Whisper
+  node transcribe.mjs                            # Interactive mode
+  node transcribe.mjs ~/Downloads/recording.m4a  # Process specific file
+  node transcribe.mjs --video ~/Downloads/video.mp4  # Process video file
+  node transcribe.mjs --whisper recording.m4a    # Use Whisper API
+  node transcribe.mjs --scribe recording.m4a     # Use Scribe API
+  node transcribe.mjs --silent                   # Auto-process in silent mode
 `);
+}
+
+/**
+ * Get the newest voice memo that hasn't been processed yet
+ * @returns {Promise<string|null>} - Path to the newest unprocessed voice memo, or null if all are processed
+ */
+async function getLatestUnprocessedVoiceMemo() {
+  try {
+    // Get processed filenames
+    const processed = getProcessedFilenames();
+    
+    // Get recent voice memos (up to 100 as requested by user)
+    const files = await getLatestVoiceMemos(100);
+    
+    // Find the first unprocessed file
+    for (const file of files) {
+      const originalFileName = path.basename(file.file);
+      if (!processed.has(originalFileName)) {
+        console.log(`Found unprocessed voice memo: ${file.file}`);
+        return file.fullPath;
+      }
+    }
+    
+    console.log('No unprocessed voice memos found.');
+    return null;
+  } catch (err) {
+    console.error('Error finding unprocessed voice memo:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Process voice memo in silent mode with predefined options
+ * @param {string} filePath - Path to the audio file
+ * @returns {Promise<void>}
+ */
+async function processInSilentMode(filePath) {
+  if (!filePath) {
+    console.error('No unprocessed voice memo found.');
+    return;
+  }
+  
+  // Use Scribe with model 1 (scribe_v1) and auto voice detection
+  const options = {
+    transcriptionService: 'scribe',
+    forceVideoMode: false,
+    lowQuality: false,
+    silentMode: true,      // Add the silent mode flag to bypass prompts
+    model: 'scribe_v1',    // Model 1 as specified in requirements
+    maxSpeakers: null      // Auto voice detection as specified in requirements
+  };
+  
+  console.log(`Silent mode: Processing file ${filePath} with model 1 and auto voice detection`);
+  try {
+    await processVoiceMemo(filePath, options);
+    console.log('Silent mode processing completed successfully.');
+  } catch (error) {
+    console.error('Error during silent mode processing:', error.message);
+  }
 }
 
 // Run if called directly
 if (import.meta.url === `file://${process.argv[1]}`) {
   const parsedArgs = parseCommandLineArgs(); // This will exit if --help is passed
-
-  if (parsedArgs.filePath) {
+  
+  // The order of checks is important - silent mode takes highest precedence
+  if (parsedArgs.silentMode === true) {
+    console.log('Running in silent mode - will auto-process the newest unprocessed voice memo');
+    // Silent mode - auto process the newest unprocessed voice memo
+    getLatestUnprocessedVoiceMemo()
+      .then(filePath => {
+        if (filePath) {
+          return processInSilentMode(filePath);
+        } else {
+          console.log('No unprocessed voice memos found.');
+        }
+      })
+      .catch(err => {
+        console.error('Error in silent mode:', err.message);
+      });
+  } else if (parsedArgs.filePath) {
     // Direct file processing mode
     console.log(`Processing file: ${parsedArgs.filePath}`);
     processVoiceMemo(parsedArgs.filePath, {
@@ -412,9 +498,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       transcriptionService: parsedArgs.transcriptionService
     });
   } else {
-    // Interactive mode (no file path provided, or only flags like --reprocess were passed)
+    // Interactive mode (no file path provided)
     transcribeLatestVoiceMemo(parsedArgs.transcriptionService);
   }
 }
 
-export { transcribeLatestVoiceMemo };
+export { transcribeLatestVoiceMemo, getLatestUnprocessedVoiceMemo, processInSilentMode };

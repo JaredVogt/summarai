@@ -165,8 +165,7 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
     });
     spinnerStop();
 
-    // Log the full response data for debugging
-    console.log('[ClaudeAPI] Full response data:', JSON.stringify(response.data, null, 2));
+    // Response received from Claude API
 
     // Extract content based on Messages API structure
     // Find the content block with type: "text"

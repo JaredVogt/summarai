@@ -4,3 +4,5 @@ temp/
 temp.mp3
 temp.m4a
 input_files/
+.move_log
+move_debug.log
