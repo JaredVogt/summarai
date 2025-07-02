@@ -58,11 +58,11 @@ export async function convertToTempAAC(inputPath, tempDir, { forceAudioExtractio
     
     if (isVideo) {
       // For video files: extract audio and optimize for speech
-      cmd = `ffmpeg -i "${inputPath}" -vn -c:a aac -b:a ${bitrate} -ar ${samplerate} -ac 1 "${tempAAC}" -y`;
+      cmd = `ffmpeg -i "${inputPath}" -vn -af "atempo=1.5" -c:a aac -b:a ${bitrate} -ar ${samplerate} -ac 1 "${tempAAC}" -y`;
       console.log(`Extracting audio from video file (${lowQuality ? 'low' : 'normal'} quality)...`);
     } else {
       // For audio files: just optimize for speech
-      cmd = `ffmpeg -i "${inputPath}" -c:a aac -b:a ${bitrate} -ar ${samplerate} -ac 1 "${tempAAC}" -y`;
+      cmd = `ffmpeg -i "${inputPath}" -af "atempo=1.5" -c:a aac -b:a ${bitrate} -ar ${samplerate} -ac 1 "${tempAAC}" -y`;
       console.log(`Processing audio file (${lowQuality ? 'low' : 'normal'} quality)...`);
     }
     
@@ -141,7 +141,7 @@ export async function splitAudioFile(audioFilePath, outputDir, maxSizeMB = 22) {
       const chunkPath = path.join(outputDir, `chunk_${i.toString().padStart(3, '0')}.m4a`);
       
       // Use ffmpeg to extract chunk
-      const cmd = `ffmpeg -i "${audioFilePath}" -ss ${startTime} -t ${chunkDuration} -c:a aac -b:a 48k -ar 16000 -ac 1 "${chunkPath}" -y`;
+      const cmd = `ffmpeg -i "${audioFilePath}" -ss ${startTime} -t ${chunkDuration} -af "atempo=1.5" -c:a aac -b:a 48k -ar 16000 -ac 1 "${chunkPath}" -y`;
       await exec(cmd);
       
       chunkPaths.push(chunkPath);

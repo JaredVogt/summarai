@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { startSpinner } from './utils.mjs';
 import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
+import { retryWithBackoff, defaultShouldRetry } from './retryUtils.mjs';
 
 // Don't read the API key at import time, will access process.env directly when needed
 
@@ -27,7 +28,7 @@ export async function transcribeWithScribe(audioFilePath, options = {}) {
     verbose = false, // Whether to return verbose data
   } = options;
 
-  const timeoutInSeconds = options.timeoutInSeconds || 300; // Timeout in seconds
+  const timeoutInSeconds = options.timeoutInSeconds || parseInt(process.env.SCRIBE_TIMEOUT_SECONDS) || 300; // Timeout in seconds
 
   // Check file exists and validate size
   if (!fs.existsSync(audioFilePath)) {
@@ -126,20 +127,42 @@ export async function transcribeWithScribe(audioFilePath, options = {}) {
     const fileBuffer = fs.readFileSync(audioFilePath);
     
     // Create a Blob from the buffer, similar to the working example
-    const audioBlob = new Blob([fileBuffer], { type: mimeType });
+    let audioBlob = new Blob([fileBuffer], { type: mimeType });
 
     // Log options before calling API
     console.log(`[ScribeAPI] Calling ElevenLabs speechToText.convert with:`);
     console.log(`[ScribeAPI] Blob type: ${audioBlob.type}, size: ${audioBlob.size}`);
     console.log(`[ScribeAPI] Options:`, JSON.stringify(callSpecificOptions, null, 2));
 
-    // Call with file Blob
-    const result = await elevenlabs.speechToText.convert({
-      ...callSpecificOptions, // Use the modified options for testing
-      file: audioBlob, // Pass the Blob object
-    }, {
-      timeoutInSeconds: timeoutInSeconds // Use timeoutInSeconds directly
-    });
+    // Define retry options for ElevenLabs
+    const retryOptions = {
+      maxRetries: 3,
+      operation: 'ElevenLabs Scribe transcription',
+      shouldRetry: (error) => {
+        // Custom retry logic for ElevenLabs
+        if (error.message && error.message.includes('Response body object should not be disturbed or locked')) {
+          return true;
+        }
+        // Use default retry logic for other errors
+        return defaultShouldRetry(error);
+      },
+      onRetry: async (attempt, error) => {
+        // Create fresh Blob on retry to avoid stream reuse issues
+        console.log(`[ScribeAPI] Creating fresh Blob for retry attempt ${attempt}`);
+        const freshFileBuffer = fs.readFileSync(audioFilePath);
+        audioBlob = new Blob([freshFileBuffer], { type: mimeType });
+      }
+    };
+
+    // Call with retry logic
+    const result = await retryWithBackoff(async () => {
+      return await elevenlabs.speechToText.convert({
+        ...callSpecificOptions, // Use the modified options for testing
+        file: audioBlob, // Pass the Blob object
+      }, {
+        timeoutInSeconds: timeoutInSeconds // Use timeoutInSeconds directly
+      });
+    }, retryOptions);
     
     stopSpinner();
     

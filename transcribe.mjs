@@ -3,17 +3,21 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 
-// Path to .env file in home directory
-const envPath = path.join(os.homedir(), '.env');
+// Path to .env file in home directory (for API keys)
+const homeEnvPath = path.join(os.homedir(), '.env');
 
-// Check if .env file exists
-if (!fs.existsSync(envPath)) {
-  console.error(`ERROR: .env file not found in home directory (${envPath})`);
+// Check if home .env file exists
+if (!fs.existsSync(homeEnvPath)) {
+  console.error(`ERROR: .env file not found in home directory (${homeEnvPath})`);
   process.exit(1);
 }
 
-// Load environment variables from .env file
-dotenv.config({ path: envPath });
+// Load API keys from home directory .env file
+dotenv.config({ path: homeEnvPath });
+
+// Load project-specific configuration from local .env file
+// This will merge with existing env vars, not overwrite them
+dotenv.config();
 
 import axios from 'axios';
 import FormData from 'form-data';
@@ -149,7 +153,7 @@ async function transcribeLatestVoiceMemo(transcriptionService) {
 }
 
 // Exportable main workflow for automation
-export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQuality = false, transcriptionService = 'scribe', silentMode = false, model = null, maxSpeakers = null } = {}) {
+export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQuality = false, transcriptionService = 'scribe', silentMode = false, model = null, maxSpeakers = null, fromGoogleDrive = false } = {}) {
   const originalFileName = path.basename(filePath);
   let recordingDateTime = null;
   let recordingDateTimePrefix = null;
@@ -302,11 +306,27 @@ export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQu
   
     // Add to process_history.json in root
     addToProcessHistory(originalFileName, recordingDateTime || new Date().toISOString());
-    return { finalName, targetDir, transcript, segmentsContent };
+    
+    // If from Google Drive, return the compressed file path for moving
+    if (fromGoogleDrive && usedTemp) {
+      return { 
+        finalName, 
+        targetDir, 
+        transcript, 
+        segmentsContent,
+        compressedPath: tempAACPath,
+        tempDir: tempDir // Return tempDir so caller can clean it up after moving
+      };
+    } else {
+      // For non-Google Drive files, clean up temp as usual
+      if (usedTemp) cleanupTempDir(tempDir);
+      return { finalName, targetDir, transcript, segmentsContent };
+    }
   } catch (error) {
     console.error(error.message);
-  } finally {
+    // Always clean up on error
     if (usedTemp) cleanupTempDir(tempDir);
+    throw error; // Re-throw to let caller handle
   }
 }
 

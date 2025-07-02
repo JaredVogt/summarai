@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { startSpinner, sanitizeFilename } from './utils.mjs';
+import { retryWithBackoff, defaultShouldRetry } from './retryUtils.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -146,23 +147,43 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
   const spinnerStop = startSpinner('Sending to Claude...');
   let claudeText = '';
   try {
-    const response = await axios.post('https://api.anthropic.com/v1/messages', {
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 16000,
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 10000
-      },
-      messages: [
-        { role: 'user', content: prompt }
-      ]
-    }, {
-      headers: {
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
+    // Define retry options for Claude API
+    const retryOptions = {
+      maxRetries: 3,
+      operation: 'Claude API request',
+      shouldRetry: (error) => {
+        // Check for rate limit errors
+        if (error.response && error.response.status === 429) {
+          console.log('[ClaudeAPI] Rate limit hit, will retry');
+          return true;
+        }
+        // Use default retry logic for other errors
+        return defaultShouldRetry(error);
       }
-    });
+    };
+
+    // Call Claude API with retry logic
+    const response = await retryWithBackoff(async () => {
+      return await axios.post('https://api.anthropic.com/v1/messages', {
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 16000,
+        thinking: {
+          type: 'enabled',
+          budget_tokens: 10000
+        },
+        messages: [
+          { role: 'user', content: prompt }
+        ]
+      }, {
+        headers: {
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json'
+        },
+        timeout: parseInt(process.env.CLAUDE_TIMEOUT_SECONDS) * 1000 || 120000 // 2 minutes default
+      });
+    }, retryOptions);
+    
     spinnerStop();
 
     // Response received from Claude API
