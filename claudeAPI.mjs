@@ -121,9 +121,10 @@ function getContentTypeFromPath(filePath) {
  * @param {string} recordingDateTimePrefix - Formatted date/time prefix
  * @param {string} recordingDateTime - ISO formatted date/time
  * @param {string} outputDir - Base output directory
+ * @param {string} originalFileName - Original filename to preserve date prefix from
  * @returns {Promise<Object>} - Result with finalName, targetDir, and mdFilePath
  */
-export async function sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, outputDir) {
+export async function sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, outputDir, originalFileName = null) {
   // Get API key at runtime, after dotenv has loaded it
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
   
@@ -247,19 +248,30 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
     summary = `memo_${path.basename(filePath).replace(/\.[^.]+$/, '')}`;
   }
 
+  // If originalFileName is provided and contains a date prefix in format YYMMDD_HHMM, use that
+  let prefixToUse = recordingDateTimePrefix;
+  if (originalFileName) {
+    // Match pattern like 250624_0155.mp3 - extract just the date_time part
+    const originalDateMatch = originalFileName.match(/^(\d{6}_\d{4})(?:\.|$)/);
+    if (originalDateMatch) {
+      prefixToUse = originalDateMatch[1];
+      console.log(`Using original date prefix from filename: ${prefixToUse}`);
+    }
+  }
+
   // Check for existing files with the same date and time prefix, and increment version if needed
   let versionSuffix = '';
   const outputFiles = fs.readdirSync(outputDir);
   // Only match files with the same date and time prefix, regardless of summary
-  const prefixPattern = new RegExp(`^${recordingDateTimePrefix.replace(/([.*+?^=!:${}()|[\]\/\\])/g, '\\$1')}`);
+  const prefixPattern = new RegExp(`^${prefixToUse.replace(/([.*+?^=!:${}()|[\]\/\\])/g, '\\$1')}`);
   const samePrefixFiles = outputFiles.filter(f => prefixPattern.test(f));
   if (samePrefixFiles.length > 0) {
     // Find the highest _vN suffix used for any file with this prefix
     let maxVersion = 1;
-    // Use a simplified regex pattern if recordingDateTimePrefix contains special characters
+    // Use a simplified regex pattern if prefixToUse contains special characters
     let safePrefix;
     try {
-      safePrefix = recordingDateTimePrefix.replace(/([.*+?^=!:${}()|[\]\/\\])/g, '\\$1');
+      safePrefix = prefixToUse.replace(/([.*+?^=!:${}()|[\]\/\\])/g, '\\$1');
       const versionPattern = new RegExp(`^${safePrefix}.*_v(\\d+)\\.md$`);
       samePrefixFiles.forEach(f => {
         const m = f.match(versionPattern);
@@ -277,7 +289,7 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
     }
     versionSuffix = `_v${maxVersion + 1}`;
   }
-  const finalName = `${recordingDateTimePrefix}_${summary}${versionSuffix}`;
+  const finalName = `${prefixToUse}_${summary}${versionSuffix}`;
 
   // Ensure output directory exists
   if (!fs.existsSync(outputDir)) {

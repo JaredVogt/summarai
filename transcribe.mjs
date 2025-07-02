@@ -291,7 +291,7 @@ export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQu
   
     // Send to Claude and write output (markdown + audio)
     // Pass the original .m4a path, not the temp AAC
-    const { finalName, targetDir, mdFilePath } = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, OUTPUT_DIR);
+    const { finalName, targetDir, mdFilePath } = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, OUTPUT_DIR, originalFileName);
     
     // Write segments to a file
     const segmentsFile = path.join(targetDir, `${finalName}_segments.txt`);

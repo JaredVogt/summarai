@@ -53,12 +53,25 @@ const SUPPORTED_EXTENSIONS = ['.m4a', '.mp3', '.wav', '.mp4', '.mov', '.avi', '.
 const processed = new Set();
 
 /**
- * Check if a file has a supported extension
+ * Check if a file has a supported extension and is not a temp file
  * @param {string} filePath - Path to the file
  * @returns {boolean} - True if supported
  */
 function isSupportedFile(filePath) {
   const ext = path.extname(filePath).toLowerCase();
+  const basename = path.basename(filePath);
+  const dirname = path.dirname(filePath);
+  
+  // Ignore temp files and files in temp directories
+  if (basename.startsWith('temp') || 
+      basename.startsWith('chunk_') || 
+      dirname.includes('/temp/') || 
+      dirname.includes('\\temp\\') ||
+      dirname.endsWith('/temp') ||
+      dirname.endsWith('\\temp')) {
+    return false;
+  }
+  
   return SUPPORTED_EXTENSIONS.includes(ext);
 }
 
@@ -320,7 +333,14 @@ async function startWatching() {
   awaitWriteFinish: {
     stabilityThreshold: 2000,
     pollInterval: 100
-  }
+  },
+  ignored: [
+    '**/temp/**',    // Ignore temp directories
+    '**/temp',       // Ignore temp directories
+    '**/*.processing', // Ignore lock files
+    '**/chunk_*',    // Ignore chunk files
+    '**/temp.*'      // Ignore temp.* files
+  ]
 });
 
   watcher
