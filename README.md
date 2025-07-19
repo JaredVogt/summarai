@@ -16,6 +16,7 @@
 - Automatic file watching and processing for Voice Memos and Google Drive
 - Retry logic with exponential backoff for API reliability
 - Audio speed optimization (1.5x) for faster processing
+- Automatic checking for newer Claude model versions with 24-hour caching
 
 ## Output Directory Logic
 
@@ -98,3 +99,27 @@ The system uses two `.env` files:
 3. Create `~/.env` file with your API keys
 4. Review and adjust `.env` configuration as needed
 5. Customize keywords.txt, nomenclature.txt, and instructions.md as desired
+
+## Model Version Checking
+
+The system automatically checks for newer Claude model versions when processing transcriptions:
+
+- Checks the Anthropic documentation for the latest Opus 4 and Sonnet 4 models
+- Compares with the currently configured model (default: `claude-opus-4-20250514`)
+- Displays informative messages if newer models are available
+- Caches results for 24 hours to minimize API requests
+- Non-blocking: checks happen asynchronously without slowing down transcriptions
+
+To update to a newer model, modify the model identifier in `claudeAPI.mjs`.
+
+### Testing Model Checker
+
+You can manually test the model checker:
+
+```bash
+# Test with current model
+node modelChecker.mjs
+
+# Test with a specific model
+node modelChecker.mjs claude-opus-4-20250101
+```

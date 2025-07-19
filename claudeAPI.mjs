@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { startSpinner, sanitizeFilename } from './utils.mjs';
 import { retryWithBackoff, defaultShouldRetry } from './retryUtils.mjs';
+import { checkForNewerModels } from './modelChecker.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -163,10 +164,17 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
       }
     };
 
+    // Check for newer models (non-blocking)
+    const currentModel = 'claude-opus-4-20250514';
+    checkForNewerModels(currentModel).catch(err => {
+      // Don't let model checking errors interrupt the main flow
+      console.error('[ModelChecker] Error checking for newer models:', err.message);
+    });
+
     // Call Claude API with retry logic
     const response = await retryWithBackoff(async () => {
       return await axios.post('https://api.anthropic.com/v1/messages', {
-        model: 'claude-sonnet-4-20250514',
+        model: currentModel,
         max_tokens: 16000,
         thinking: {
           type: 'enabled',
