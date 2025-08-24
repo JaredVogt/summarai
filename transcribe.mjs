@@ -162,7 +162,7 @@ export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQu
   const dtMatch = originalFileName.match(/(\d{8})[ _-](\d{6})/);
   if (dtMatch) {
     const [_, ymd, hms] = dtMatch;
-    recordingDateTimePrefix = `${ymd}_${hms.slice(0,2)}:${hms.slice(2,4)}:${hms.slice(4,6)}`;
+    recordingDateTimePrefix = `${ymd}_${hms}`;
     const year = ymd.slice(0, 4);
     const month = ymd.slice(4, 6);
     const day = ymd.slice(6, 8);
@@ -182,7 +182,7 @@ export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQu
     const sec = String(now.getSeconds()).padStart(2, '0');
     
     // Format for display and filename
-    recordingDateTimePrefix = `${year}${month}${day}_${hour}:${min}:${sec}`;
+    recordingDateTimePrefix = `${year}${month}${day}_${hour}${min}${sec}`;
     recordingDateTime = now.toISOString();
   }
   // Always convert to temp AAC
