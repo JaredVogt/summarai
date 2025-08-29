@@ -1,0 +1,254 @@
+# Voice Memo Processing Configuration - Example
+# Copy this file to config.yaml and customize for your setup
+
+# Directory Configuration
+directories:
+  # Apple Voice Memos location
+  # Default: ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings
+  voiceMemos: ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings
+  
+  # Google Drive directories
+  googleDrive:
+    # Directory where unprocessed files are uploaded
+    unprocessed: ~/Library/CloudStorage/GoogleDrive-YOUR_EMAIL/My Drive/VM_transcription/unprocessed
+    # Directory where processed files are moved to
+    processed: ~/Library/CloudStorage/GoogleDrive-YOUR_EMAIL/My Drive/VM_transcription/processed
+  
+  # Output directory for transcriptions
+  # This is where transcribed text files will be saved
+  output: ~/Library/CloudStorage/GoogleDrive-YOUR_EMAIL/My Drive/VM_transcription
+  
+  # Temporary files directory (will be created if it doesn't exist)
+  temp: ./temp
+
+# File Processing Configuration
+fileProcessing:
+  # Supported file extensions
+  # Add or remove extensions as needed
+  supportedExtensions:
+    audio: 
+      - .m4a
+      - .mp3
+      - .wav
+      - .ogg
+      - .flac
+    video: 
+      - .mp4
+      - .mov
+      - .avi
+      - .mkv
+      - .webm
+  
+  # File naming patterns
+  naming:
+    dateFormat: YYYY-MM-DD-HHMMSS  # Format for generated filenames
+    preserveOriginalPrefix: true    # Keep original date prefix from filename
+  
+  # Process history tracking
+  history:
+    enabled: true                   # Track processed files to avoid duplicates
+    file: ./process_history.json    # File to store processing history
+  
+  # Ignore patterns - files/directories to skip
+  ignore:
+    patterns:
+      - temp*                       # Any files starting with "temp"
+      - chunk_*                     # Chunk files from splitting
+      - "*.processing"              # Lock files
+    directories:
+      - /temp/
+      - /temp
+
+# Watch Settings
+watch:
+  # Which directories to watch for new files
+  enabled:
+    voiceMemos: true               # Watch Apple Voice Memos directory
+    googleDrive: true              # Watch Google Drive unprocessed directory
+  
+  # Initial processing options (when starting the watcher)
+  initialProcessing:
+    cleanout: false                # Process all existing files on startup
+    processRecentVm: false         # Process recent voice memos on startup
+    defaultDateRange: 120          # Days to look back for recent processing
+  
+  # File stability settings
+  stability:
+    threshold: 2000                # ms to wait for file to be stable before processing
+    pollInterval: 100              # ms between stability checks
+  
+  # Queue processing
+  queue:
+    delayBetweenFiles: 2000        # ms delay between processing files
+    initialDelay: 5000             # ms to wait before processing new file
+
+# FFmpeg/Audio Processing
+audio:
+  # Compression settings for different quality levels
+  compression:
+    normal:                        # Standard quality
+      bitrate: 48k
+      sampleRate: 16000
+    low:                           # Lower quality, smaller files
+      bitrate: 24k
+      sampleRate: 8000
+  
+  # Processing settings
+  processing:
+    speedAdjustment: 1.5           # Speed up audio for transcription (1.5x faster)
+    codec: aac                     # Audio codec to use
+    channels: 1                    # 1 for mono, 2 for stereo (mono recommended for speech)
+    format: m4a                    # Output format
+  
+  # Chunking for large files
+  chunking:
+    enabled: true                  # Split large files into chunks
+    maxSizeMB: 22                  # Maximum size before splitting (MB)
+    chunkPrefix: chunk_            # Prefix for chunk files
+
+# Transcription Services Configuration
+transcription:
+  # Default service to use
+  # Options: whisper (OpenAI), scribe (ElevenLabs)
+  defaultService: scribe
+  
+  # Whisper API settings (OpenAI)
+  whisper:
+    model: whisper-1               # OpenAI Whisper model
+    language: null                 # null for auto-detect, or language code
+    temperature: 0                 # 0 for most consistent output
+    responseFormat: verbose_json   # Get detailed response with timestamps
+    # Prompt to help with specialized terminology
+    nomenclaturePrompt: |
+      Common names and terms: [Add your commonly used terms here]
+      Examples: Jared, company names, technical terms, etc.
+  
+  # Scribe API settings (ElevenLabs)
+  scribe:
+    model: scribe_v1               # Options: scribe_v1, scribe_v1_experimental
+    language: eng                  # Language code (eng for English)
+    tagAudioEvents: true           # Tag events like (laughter), (applause)
+    diarize: true                  # Separate different speakers
+    maxSpeakers: null              # null for auto-detect, or specify number (1-32)
+    timeoutSeconds: 300            # Timeout for transcription requests
+
+# API Configuration
+api:
+  # Retry settings for failed requests
+  retry:
+    maxRetries: 3                  # Maximum number of retry attempts
+    baseDelay: 1000                # Initial delay between retries (ms)
+    maxDelay: 30000                # Maximum delay between retries (ms)
+  
+  # Timeout settings (seconds)
+  timeouts:
+    scribe: 300                    # ElevenLabs Scribe timeout
+    claude: 120                    # Claude API timeout
+    whisper: 180                   # OpenAI Whisper timeout
+  
+  # Rate limiting (optional)
+  rateLimiting:
+    enabled: false                 # Enable rate limiting
+    requestsPerMinute: 60          # Requests per minute limit
+
+# Claude API Configuration
+# Used for summarizing transcriptions
+claude:
+  model: claude-3-5-sonnet-20241022  # Claude model to use
+  maxTokens: 1500                    # Maximum tokens in response
+  temperature: 0.3                   # Creativity level (0-1, lower = more consistent)
+  # System prompt for Claude
+  systemPrompt: |
+    Briefly title and summarize this voice memo transcript in a natural, concise way.
+    Focus on the main ideas and key points.
+  # Prompt for generating summaries
+  summaryPrompt: |
+    Provide a title and 2-3 sentence summary for this transcript.
+
+# Logging & Monitoring
+logging:
+  # Log levels: debug, info, warn, error
+  level: info
+  
+  # Console output settings
+  console:
+    verbose: false                 # Show detailed output
+    showSpinner: true              # Show progress spinners
+    showProgress: true             # Show progress indicators
+  
+  # Process history tracking
+  tracking:
+    enabled: true                  # Track processing history
+    detailed: false                # Store detailed processing info
+
+# Backup & Recovery
+backup:
+  # Backup settings
+  enabled: false                   # Create backups before processing (recommended: false for large files)
+  directory: ./backups             # Where to store backups
+  
+  # Recovery options
+  recovery:
+    autoRecover: false             # Auto-recover from failed processing
+    maxAttempts: 3                 # Max recovery attempts
+  
+  # Lock file management
+  lockFiles:
+    enabled: true                  # Use lock files to prevent concurrent processing
+    extension: .processing         # Lock file extension
+
+# Mode Flags
+modes:
+  # Silent mode (for automated processing)
+  silent:
+    enabled: false                 # Enable silent mode by default
+    suppressOutput: true           # Suppress console output in silent mode
+    autoConfirm: true             # Auto-confirm prompts in silent mode
+  
+  # Dry run mode (show what would be done without doing it)
+  dryRun:
+    enabled: false                 # Enable dry run by default
+    showActions: true              # Show what actions would be taken
+  
+  # Batch processing
+  batch:
+    enabled: false                 # Enable batch processing
+    maxConcurrent: 1               # Max files to process concurrently
+    autoProcess: false             # Auto-process without confirmation
+
+# Environment variable overrides
+# Set to false to disable environment variable overrides
+# Any setting can be overridden with environment variables using format:
+# PROCESSVM_SECTION_SUBSECTION_KEY
+# Example: PROCESSVM_DIRECTORIES_VOICEMEMOS=/custom/path
+envOverride: true
+
+# ==========================================
+# CUSTOMIZATION INSTRUCTIONS
+# ==========================================
+#
+# 1. Update Google Drive paths:
+#    - Replace "YOUR_EMAIL" with your actual email
+#    - Adjust paths to match your Google Drive structure
+#
+# 2. Configure API keys in ~/.env:
+#    ELEVENLABS_API_KEY=your_elevenlabs_api_key
+#    ANTHROPIC_API_KEY=your_anthropic_api_key  
+#    OPENAI_API_KEY=your_openai_api_key
+#
+# 3. Adjust transcription settings:
+#    - Choose defaultService: whisper or scribe
+#    - Update nomenclaturePrompt with your common terms
+#    - Set language preferences
+#
+# 4. Customize audio processing:
+#    - Adjust quality settings for your needs
+#    - Change chunk size based on file sizes
+#    - Modify speed adjustment if needed
+#
+# 5. Set up directories:
+#    - Ensure Google Drive is synced
+#    - Create unprocessed/processed folders
+#    - Verify Voice Memos path is correct
+#
+# ==========================================

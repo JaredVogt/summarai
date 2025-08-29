@@ -1,125 +1,368 @@
 # Voice Memo Processing & Transcription Workflow
 
-## Features
+A comprehensive system for automatically processing voice memos and audio/video files with transcription, summarization, and intelligent organization.
 
-- Lists recent voice memos sorted by date/time in filename (not modification time)
-- Displays metadata for each memo: duration (mins:secs), recording date, GPS info
-- Always compresses selected files to temp AAC format (48k, mono, 16kHz) before transcription using ffmpeg
-- Cleans up temp files after processing
-- Supports multiple transcription services: ElevenLabs Scribe (default) or OpenAI Whisper
-- Claude summarization and markdown output with thinking mode
-- Consistent output naming: prefix is `YYYYMMDD_HH:MM:SS` from original filename
-- Output files are written to `output/` or `output/[keyword]/` depending on keyword match (first match only)
-- All three files (.md, .m4a, .txt) are written to the same directory
-- Nomenclature and instructions notes are prepended to the Claude prompt
-- Keywords and nomenclature are fully customizable
-- Automatic file watching and processing for Voice Memos and Google Drive
-- Retry logic with exponential backoff for API reliability
-- Audio speed optimization (1.5x) for faster processing
-- Automatic checking for newer Claude model versions with 24-hour caching
+## ✨ Features
 
-## Output Directory Logic
+### Core Processing
+- **Smart File Detection**: Lists recent voice memos sorted by date/time in filename (not modification time)
+- **Rich Metadata**: Displays duration (mins:secs), recording date, and GPS info for each memo
+- **Audio Optimization**: Always compresses files to optimized AAC format (configurable bitrate/sample rate) using ffmpeg
+- **Video Support**: Automatic audio extraction from video files (MP4, MOV, AVI, MKV, WebM)
+- **Multiple Transcription Services**: ElevenLabs Scribe (default) or OpenAI Whisper support
+- **AI Summarization**: Claude-powered markdown summaries with configurable prompts
 
-- If no keywords match, files are written to `output/`
-- If a keyword matches, files are written only to `output/[first-matching-keyword]/`
-- No duplicate files across directories
+### Intelligent Organization  
+- **Keyword-Based Routing**: Automatic file organization based on configurable keywords
+- **Consistent Naming**: Output files use `YYYYMMDD_HH:MM:SS` format from original filename
+- **Multiple Output Formats**: `.md` (summary), `.m4a` (compressed audio), `.txt` (raw transcription)
+- **Directory Logic**: Files route to `output/` or `output/[keyword]/` based on first matching keyword
 
-## File Types Generated
+### Automation & Reliability
+- **Automatic File Watching**: Monitors Voice Memos and Google Drive directories for new files
+- **Retry Logic**: Exponential backoff for API reliability and error recovery  
+- **Silent Mode**: Fully automated processing without user interaction
+- **Date Range Processing**: Flexible processing of Voice Memos from specific date ranges
+- **Lock File System**: Prevents concurrent processing of the same file
+- **Process History**: Tracks processed files to avoid duplicates
 
-- `.md`: Claude's markdown summary, includes original file/date info
-- `.m4a`: Copy of the original audio file (compressed)
-- `.txt`: Transcription raw output
+### Advanced Features
+- **Model Version Checking**: Automatically checks for newer Claude models with 24-hour caching
+- **Flexible Audio Quality**: Normal (48k/16kHz) or low quality (24k/8kHz) compression options
+- **Large File Chunking**: Automatic splitting of large audio files for processing
+- **Configuration System**: Centralized YAML configuration with environment variable overrides
+- **Speed Optimization**: Configurable audio speed adjustment (default 1.5x) for faster processing
 
-## Usage
+## 📁 File Types Generated
 
-### Interactive Mode
-1. Run: `node transcribe.mjs`
-2. Choose how many recent memos to display
-3. Pick a file to transcribe
-4. All outputs are placed in the appropriate output directory
+- **`.md`**: Claude's markdown summary with metadata and structured content
+- **`.m4a`**: Compressed audio copy optimized for storage
+- **`.txt`**: Raw transcription output from the chosen service
 
-### Command Line Options
-- `--file <path>`: Process a specific file
-- `--service <whisper|scribe>`: Choose transcription service (default: scribe)
-- `--low`: Use low quality compression for faster processing
-- `--silent`: Run in silent mode (no prompts, automated processing)
+## 🚀 Usage
 
-### Automatic File Watching
-Run `node watchDirectories.mjs` to automatically process new files from:
-- Apple Voice Memos directory
-- Google Drive unprocessed folder
+### Configuration Setup
+**Important**: The system now uses a centralized configuration file instead of scattered environment variables.
 
-Options:
-- `--cleanout`: Process all existing files in Google Drive unprocessed folder before watching
-- `--help`: Show help message
-
-## Configuration
-
-### Environment Variables
-The system uses two `.env` files:
-
-1. **`~/.env`** (in your home directory) - For sensitive API keys:
+1. **Copy and customize configuration**:
+   ```bash
+   cp example.config.yaml config.yaml
+   # Edit config.yaml with your specific paths and preferences
    ```
+
+2. **Set up API keys** in `~/.env` (your home directory):
+   ```bash
    ANTHROPIC_API_KEY=your-anthropic-api-key
-   ELEVENLABS_API_KEY=your-elevenlabs-api-key
+   ELEVENLABS_API_KEY=your-elevenlabs-api-key  
    OPENAI_API_KEY=your-openai-api-key
    ```
 
-2. **`.env`** (in project directory) - For configuration:
-   ```
-   # Retry Configuration
-   API_MAX_RETRIES=3
-   API_RETRY_BASE_DELAY=1000
-   API_RETRY_MAX_DELAY=30000
-   
-   # API Timeouts (in seconds)
-   SCRIBE_TIMEOUT_SECONDS=300
-   CLAUDE_TIMEOUT_SECONDS=120
-   
-   # Google Drive Directory Paths
-   GOOGLE_DRIVE_UNPROCESSED=/path/to/unprocessed
-   GOOGLE_DRIVE_PROCESSED=/path/to/processed
-   ```
+### Interactive Mode
+```bash
+node transcribe.mjs
+```
+1. Choose how many recent memos to display
+2. Select a file to transcribe
+3. Files are automatically organized based on keywords
 
-### Customization Files
-- Edit `keywords.txt` to change output keyword logic
-- Edit `nomenclature.txt` for domain-specific terms
-- Edit `instructions.md` for Claude prompt instructions
+### Command Line Options
+```bash
+# Process a specific file
+node transcribe.mjs --file /path/to/audio.m4a
 
-## Requirements
+# Choose transcription service
+node transcribe.mjs --service whisper
+node transcribe.mjs --service scribe
 
-- Node.js (v18+ recommended)
-- ffmpeg installed and available in PATH
-- API keys for the services you want to use (see Environment Variables above)
+# Use low quality compression (faster processing)
+node transcribe.mjs --low
 
-## Installation
+# Run in silent mode (no prompts)
+node transcribe.mjs --silent
+```
 
-1. Clone the repository
-2. Run `npm install` to install dependencies
-3. Create `~/.env` file with your API keys
-4. Review and adjust `.env` configuration as needed
-5. Customize keywords.txt, nomenclature.txt, and instructions.md as desired
-
-## Model Version Checking
-
-The system automatically checks for newer Claude model versions when processing transcriptions:
-
-- Checks the Anthropic documentation for the latest Opus 4 and Sonnet 4 models
-- Compares with the currently configured model (default: `claude-opus-4-20250514`)
-- Displays informative messages if newer models are available
-- Caches results for 24 hours to minimize API requests
-- Non-blocking: checks happen asynchronously without slowing down transcriptions
-
-To update to a newer model, modify the model identifier in `claudeAPI.mjs`.
-
-### Testing Model Checker
-
-You can manually test the model checker:
+### Automatic File Watching
+Monitor directories for new files and process them automatically:
 
 ```bash
-# Test with current model
+# Basic watching
+node watchDirectories.mjs
+
+# Process all existing Google Drive files first, then watch
+node watchDirectories.mjs --cleanout
+
+# Process recent Voice Memos from last 120 days (configurable)
+node watchDirectories.mjs --process-recent-vm
+
+# Process Voice Memos from specific date range
+node watchDirectories.mjs --process-recent-vm 7-1-25        # July 1, 2025 to now
+node watchDirectories.mjs --process-recent-vm 4-1-25:5-31-25  # April 1 to May 31, 2025
+
+# Dry run to see what would be processed
+node watchDirectories.mjs --process-recent-vm --dry-run
+
+# Show all available options
+node watchDirectories.mjs --help
+```
+
+## ⚙️ Configuration
+
+### Primary Configuration File (`config.yaml`)
+The system uses a comprehensive YAML configuration file that controls all aspects of operation:
+
+```yaml
+# Directory Configuration
+directories:
+  voiceMemos: ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings
+  googleDrive:
+    unprocessed: ~/path/to/unprocessed
+    processed: ~/path/to/processed
+  output: ~/path/to/output
+  temp: ./temp
+
+# File Processing
+fileProcessing:
+  supportedExtensions:
+    audio: [.m4a, .mp3, .wav, .ogg, .flac]
+    video: [.mp4, .mov, .avi, .mkv, .webm]
+  ignore:
+    patterns: [temp*, chunk_*, "*.processing"]
+
+# Transcription Services
+transcription:
+  defaultService: scribe  # or whisper
+  scribe:
+    model: scribe_v1
+    language: eng
+    diarize: true
+    tagAudioEvents: true
+  whisper:
+    model: whisper-1
+    language: null  # auto-detect
+
+# Audio Processing
+audio:
+  compression:
+    normal:
+      bitrate: 48k
+      sampleRate: 16000
+    low:
+      bitrate: 24k  
+      sampleRate: 8000
+  processing:
+    speedAdjustment: 1.5
+    codec: aac
+    channels: 1
+```
+
+### Environment Variable Overrides
+Override any configuration setting using the format `PROCESSVM_SECTION_SUBSECTION_KEY`:
+
+```bash
+export PROCESSVM_DIRECTORIES_VOICEMEMOS="/custom/voice/memos/path"
+export PROCESSVM_TRANSCRIPTION_DEFAULTSERVICE="whisper"
+export PROCESSVM_AUDIO_PROCESSING_SPEEDADJUSTMENT="1.0"
+```
+
+### Customization Files
+- **`keywords.txt`**: Controls output directory routing logic
+- **`nomenclature.txt`**: Domain-specific terms for better transcription accuracy
+- **`instructions.md`**: Claude prompt instructions and formatting rules
+
+## 📋 Requirements
+
+- **Node.js** v18+ recommended
+- **ffmpeg** installed and available in PATH
+- **API keys** for the services you want to use (Anthropic, ElevenLabs, OpenAI)
+
+## 🛠️ Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd processVMs
+   ```
+
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
+
+3. **Set up configuration**
+   ```bash
+   # Copy and edit configuration
+   cp example.config.yaml config.yaml
+   # Edit config.yaml with your paths and preferences
+   
+   # Create API keys file
+   echo "ANTHROPIC_API_KEY=your-key-here" >> ~/.env
+   echo "ELEVENLABS_API_KEY=your-key-here" >> ~/.env
+   echo "OPENAI_API_KEY=your-key-here" >> ~/.env
+   ```
+
+4. **Customize processing rules** (optional)
+   ```bash
+   # Edit keyword routing
+   nano keywords.txt
+   
+   # Add domain-specific terms
+   nano nomenclature.txt
+   
+   # Customize Claude instructions
+   nano instructions.md
+   ```
+
+## 🔄 Migration from Previous Version
+
+If you're upgrading from a version that used `.env` files for configuration:
+
+### Automatic Migration
+The system automatically falls back to environment variables if configuration cannot be loaded, providing seamless compatibility.
+
+### Manual Migration
+1. **Review your existing `.env` files** and note your current settings
+2. **Copy the example configuration**: `cp example.config.yaml config.yaml` 
+3. **Transfer your settings** to the appropriate sections in `config.yaml`
+4. **Test the configuration**: `node -e "import('./configLoader.mjs').then(({loadConfig}) => console.log('✓ Config loaded:', !!loadConfig()))"`
+
+### Key Changes
+- **Directory paths** moved from `GOOGLE_DRIVE_*` env vars to `config.yaml`
+- **API settings** (timeouts, retries) now in `config.yaml` 
+- **Audio processing** settings centralized in `config.yaml`
+- **File extensions** and ignore patterns now configurable
+- **Environment variables** still work as overrides using `PROCESSVM_*` format
+
+## 🤖 Model Version Checking
+
+The system automatically monitors for newer Claude model versions:
+
+- **Automatic Checking**: Checks Anthropic documentation for latest Opus 4 and Sonnet 4 models
+- **Smart Caching**: Results cached for 24 hours to minimize API requests  
+- **Non-blocking**: Runs asynchronously without affecting transcription speed
+- **Configurable Model**: Set your preferred model in the configuration
+
+### Manual Model Checking
+```bash
+# Check with current model
 node modelChecker.mjs
 
-# Test with a specific model
+# Test with specific model
 node modelChecker.mjs claude-opus-4-20250101
 ```
+
+## 🧩 Advanced Configuration Options
+
+### Watch Behavior
+```yaml
+watch:
+  enabled:
+    voiceMemos: true
+    googleDrive: true
+  initialProcessing:
+    cleanout: false
+    processRecentVm: false
+    defaultDateRange: 120  # days
+  stability:
+    threshold: 2000  # ms to wait for file stability
+    pollInterval: 100
+```
+
+### API Configuration  
+```yaml
+api:
+  retry:
+    maxRetries: 3
+    baseDelay: 1000
+    maxDelay: 30000
+  timeouts:
+    scribe: 300
+    claude: 120
+    whisper: 180
+```
+
+### Processing Modes
+```yaml
+modes:
+  silent:
+    enabled: false
+    suppressOutput: true
+    autoConfirm: true
+  dryRun:
+    enabled: false
+    showActions: true
+```
+
+## 🎯 Output Directory Logic
+
+- **No keyword match**: Files → `output/`
+- **Keyword match**: Files → `output/[first-matching-keyword]/`
+- **No duplicates**: Files only written to one location
+- **Batch consistency**: All related files (.md, .m4a, .txt) go to same directory
+
+## 🔧 Troubleshooting
+
+### Configuration Issues
+```bash
+# Test configuration loading
+node -e "import('./configLoader.mjs').then(({loadConfig}) => {try {console.log('✓ Config loaded successfully');} catch(e) {console.error('✗ Config error:', e.message);}})"
+
+# View parsed configuration
+node -e "import('./configLoader.mjs').then(({loadConfig}) => console.log(JSON.stringify(loadConfig(), null, 2)))"
+```
+
+### Common Issues
+- **"Configuration file not found"**: Ensure `config.yaml` exists in project root
+- **"Invalid YAML"**: Check YAML syntax, especially array formatting with `- ` 
+- **"Directory not found"**: Update directory paths in `config.yaml` to match your system
+- **API errors**: Verify API keys are correctly set in `~/.env`
+
+## 🔌 Hardware Integration
+
+### Sony IC Recorder Sync
+Included utility script for automatically importing audio files from Sony IC Recorders:
+
+```bash
+# Manual sync
+./sync_sony.sh
+
+# Automated sync via Keyboard Maestro (recommended)
+# - Set up KM macro triggered by USB device connection
+# - Configure macro to run sync_sony.sh automatically
+# - Files are copied to input_files/ directory for processing
+```
+
+**Features:**
+- **Automatic detection** of Sony IC Recorder when connected via USB
+- **Duplicate prevention** - only copies new files not already in destination
+- **Logging** - maintains a log of all copied files
+- **Keyboard Maestro integration** - designed for automated triggering
+
+**Configuration:** Edit paths in `sync_sony.sh` to match your setup:
+```bash
+SOURCE_DIR="/Volumes/IC RECORDER/REC_FILE/FOLDER01"  # Sony device path
+DEST_DIR="/path/to/your/input_files"                # Local destination
+LOG_FILE="/path/to/your/.move_log"                  # Copy log file
+```
+
+## 📝 Recent Updates
+
+- **v2.0**: Complete configuration system overhaul with centralized YAML config
+- **Flexible Date Ranges**: Process Voice Memos from specific date ranges
+- **Enhanced File Watching**: Improved stability and error handling
+- **Video File Support**: Full support for extracting and processing audio from video files  
+- **Retry Logic**: Robust error recovery with exponential backoff
+- **Silent Mode**: Fully automated processing capabilities
+- **Model Checking**: Automatic monitoring for newer Claude models
+- **Hardware Integration**: Sony IC Recorder sync utility with Keyboard Maestro support
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Update documentation as needed
+5. Submit a pull request
+
+## 📄 License
+
+[Add your license information here]

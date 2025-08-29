@@ -6,9 +6,21 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { processVoiceMemo } from './transcribe.mjs';
 import { cleanupTempDir } from './audioProcessing.mjs';
+import { loadConfig, getConfigValue } from './configLoader.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Load configuration
+let config;
+try {
+  config = loadConfig();
+  console.log('✓ Configuration loaded successfully');
+} catch (error) {
+  console.error('Error loading configuration:', error.message);
+  console.error('Please ensure config.yaml exists and is valid.');
+  process.exit(1);
+}
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -61,20 +73,19 @@ Examples:
   process.exit(0);
 }
 
-// Directory configurations
-const VOICE_MEMOS_DIR = path.join(
-  process.env.HOME,
-  'Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings'
-);
+// Directory configurations from config
+const VOICE_MEMOS_DIR = getConfigValue(config, 'directories.voiceMemos');
+const GOOGLE_DRIVE_UNPROCESSED = getConfigValue(config, 'directories.googleDrive.unprocessed');
+const GOOGLE_DRIVE_PROCESSED = getConfigValue(config, 'directories.googleDrive.processed');
 
-const GOOGLE_DRIVE_UNPROCESSED = process.env.GOOGLE_DRIVE_UNPROCESSED || 
-  '/Users/jaredvogt/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription/unprocessed';
+// Supported file extensions from config
+const AUDIO_EXTENSIONS = getConfigValue(config, 'fileProcessing.supportedExtensions.audio', []);
+const VIDEO_EXTENSIONS = getConfigValue(config, 'fileProcessing.supportedExtensions.video', []);
 
-const GOOGLE_DRIVE_PROCESSED = process.env.GOOGLE_DRIVE_PROCESSED || 
-  '/Users/jaredvogt/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription/processed';
-
-// Supported file extensions
-const SUPPORTED_EXTENSIONS = ['.m4a', '.mp3', '.wav', '.mp4', '.mov', '.avi', '.mkv', '.webm'];
+// Ensure arrays are valid and flatten if needed
+const safeAudioExts = Array.isArray(AUDIO_EXTENSIONS) ? AUDIO_EXTENSIONS : ['.m4a', '.mp3', '.wav'];
+const safeVideoExts = Array.isArray(VIDEO_EXTENSIONS) ? VIDEO_EXTENSIONS : ['.mp4', '.mov'];
+const SUPPORTED_EXTENSIONS = [...safeAudioExts, ...safeVideoExts];
 
 // Track processed files to avoid duplicates
 const processed = new Set();
@@ -93,14 +104,28 @@ function isSupportedFile(filePath) {
   const basename = path.basename(filePath);
   const dirname = path.dirname(filePath);
   
-  // Ignore temp files and files in temp directories
-  if (basename.startsWith('temp') || 
-      basename.startsWith('chunk_') || 
-      dirname.includes('/temp/') || 
-      dirname.includes('\\temp\\') ||
-      dirname.endsWith('/temp') ||
-      dirname.endsWith('\\temp')) {
-    return false;
+  // Get ignore patterns from config
+  const ignorePatterns = getConfigValue(config, 'fileProcessing.ignore.patterns', []);
+  const ignoreDirs = getConfigValue(config, 'fileProcessing.ignore.directories', []);
+  
+  // Ensure arrays are valid
+  const safeIgnorePatterns = Array.isArray(ignorePatterns) ? ignorePatterns : [];
+  const safeIgnoreDirs = Array.isArray(ignoreDirs) ? ignoreDirs : [];
+  
+  // Check ignore patterns
+  for (const pattern of safeIgnorePatterns) {
+    if (pattern.includes('*')) {
+      // Simple wildcard matching
+      const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+      if (regex.test(basename)) return false;
+    } else {
+      if (basename.startsWith(pattern.replace('*', ''))) return false;
+    }
+  }
+  
+  // Check ignore directories
+  for (const dir of safeIgnoreDirs) {
+    if (dirname.includes(dir)) return false;
   }
   
   return SUPPORTED_EXTENSIONS.includes(ext);
@@ -216,9 +241,10 @@ async function processQueue() {
       // Process the file
       await processFile(filePath);
       
-      // Small delay between files to be gentle on the APIs (optional)
+      // Configured delay between files
       if (processingQueue.length > 0) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        const delay = getConfigValue(config, 'watch.queue.delayBetweenFiles', 2000);
+        await new Promise(resolve => setTimeout(resolve, delay));
       }
     } catch (error) {
       console.error(`Error processing ${filePath} from queue:`, error.message);
@@ -263,10 +289,11 @@ function addToQueue(filePath) {
 function parseDateRange(dateRangeValue) {
   const currentDate = new Date();
   
-  // If no date range provided, default to last 120 days
+  // If no date range provided, use configured default
   if (!dateRangeValue) {
+    const defaultDays = getConfigValue(config, 'watch.initialProcessing.defaultDateRange', 120);
     const startDate = new Date();
-    startDate.setDate(startDate.getDate() - 120);
+    startDate.setDate(startDate.getDate() - defaultDays);
     return { startDate, endDate: currentDate };
   }
   
@@ -350,7 +377,8 @@ function parseDateRange(dateRangeValue) {
  * Get processed filenames from process_history.json
  */
 function getProcessedFilenames() {
-  const historyPath = path.join(__dirname, 'process_history.json');
+  const historyFile = getConfigValue(config, 'fileProcessing.history.file', './process_history.json');
+  const historyPath = path.isAbsolute(historyFile) ? historyFile : path.join(__dirname, historyFile);
   if (!fs.existsSync(historyPath)) return new Set();
   try {
     const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
@@ -452,9 +480,10 @@ async function processRecentVoiceMemos(startDate, endDate, dryRun = false) {
           
           await processFile(item.path);
           
-          // Small delay between files
+          // Configured delay between files
           if (i < unprocessedFiles.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            const delay = getConfigValue(config, 'watch.queue.delayBetweenFiles', 2000);
+            await new Promise(resolve => setTimeout(resolve, delay));
           }
         }
         
@@ -520,9 +549,10 @@ async function cleanoutUnprocessed() {
       // Use the existing processFile function which handles all the logic
       await processFile(filePath);
       
-      // Small delay between files to be gentle on the APIs
+      // Configured delay between files
       if (i < supportedFiles.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        const delay = getConfigValue(config, 'watch.queue.delayBetweenFiles', 2000);
+        await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
     
@@ -551,8 +581,9 @@ async function processFile(filePath) {
   const source = getFileSource(filePath);
   console.log(`Processing: ${path.basename(filePath)}`);
   
-  // Wait a few seconds to ensure file is fully written
-  await new Promise(res => setTimeout(res, 5000));
+  // Wait for configured delay to ensure file is fully written
+  const initialDelay = getConfigValue(config, 'watch.queue.initialDelay', 5000);
+  await new Promise(res => setTimeout(res, initialDelay));
   
   // Check if file still exists (might have been deleted/moved)
   if (!fs.existsSync(filePath)) {
@@ -567,14 +598,22 @@ async function processFile(filePath) {
   const lock = createLockFile(filePath);
   
   try {
-    console.log('Processing file with silent mode...');
+    console.log('Processing file with configured options...');
     
-    // Process with silent mode options
+    // Get processing options from config
+    const silentMode = getConfigValue(config, 'modes.silent.enabled', true);
+    const transcriptionService = getConfigValue(config, 'transcription.defaultService', 'scribe');
+    const modelName = transcriptionService === 'scribe' ? 
+      getConfigValue(config, 'transcription.scribe.model', 'scribe_v1') :
+      getConfigValue(config, 'transcription.whisper.model', 'whisper-1');
+    const maxSpeakers = getConfigValue(config, 'transcription.scribe.maxSpeakers', null);
+    
+    // Process with configured options
     const result = await processVoiceMemo(filePath, {
-      silentMode: true,
-      transcriptionService: 'scribe',
-      model: 'scribe_v1',
-      maxSpeakers: null,
+      silentMode,
+      transcriptionService,
+      model: modelName,
+      maxSpeakers,
       fromGoogleDrive: source === 'googleDrive' // Pass flag to indicate Google Drive source
     });
     
@@ -602,22 +641,30 @@ async function processFile(filePath) {
   }
 }
 
-// Verify directories exist
+// Verify directories exist based on config
 const dirsToWatch = [];
 
-if (fs.existsSync(VOICE_MEMOS_DIR)) {
-  dirsToWatch.push(VOICE_MEMOS_DIR);
-  console.log('✓ Watching Apple Voice Memos:', VOICE_MEMOS_DIR);
-} else {
-  console.log('✗ Apple Voice Memos directory not found:', VOICE_MEMOS_DIR);
+const watchVoiceMemos = getConfigValue(config, 'watch.enabled.voiceMemos', true);
+const watchGoogleDrive = getConfigValue(config, 'watch.enabled.googleDrive', true);
+
+if (watchVoiceMemos && VOICE_MEMOS_DIR) {
+  if (fs.existsSync(VOICE_MEMOS_DIR)) {
+    dirsToWatch.push(VOICE_MEMOS_DIR);
+    console.log('✓ Watching Apple Voice Memos:', VOICE_MEMOS_DIR);
+  } else {
+    console.log('✗ Apple Voice Memos directory not found:', VOICE_MEMOS_DIR);
+    console.log('  Update directories.voiceMemos in config.yaml if needed');
+  }
 }
 
-if (fs.existsSync(GOOGLE_DRIVE_UNPROCESSED)) {
-  dirsToWatch.push(GOOGLE_DRIVE_UNPROCESSED);
-  console.log('✓ Watching Google Drive unprocessed:', GOOGLE_DRIVE_UNPROCESSED);
-} else {
-  console.log('✗ Google Drive unprocessed directory not found:', GOOGLE_DRIVE_UNPROCESSED);
-  console.log('  You can set GOOGLE_DRIVE_UNPROCESSED environment variable to specify a different path');
+if (watchGoogleDrive && GOOGLE_DRIVE_UNPROCESSED) {
+  if (fs.existsSync(GOOGLE_DRIVE_UNPROCESSED)) {
+    dirsToWatch.push(GOOGLE_DRIVE_UNPROCESSED);
+    console.log('✓ Watching Google Drive unprocessed:', GOOGLE_DRIVE_UNPROCESSED);
+  } else {
+    console.log('✗ Google Drive unprocessed directory not found:', GOOGLE_DRIVE_UNPROCESSED);
+    console.log('  Update directories.googleDrive.unprocessed in config.yaml');
+  }
 }
 
 if (dirsToWatch.length === 0) {
@@ -627,11 +674,15 @@ if (dirsToWatch.length === 0) {
 
 // Run special modes if requested
 async function startWatching() {
-  if (cleanoutMode) {
+  // Check config for initial processing modes
+  const configCleanout = getConfigValue(config, 'watch.initialProcessing.cleanout', false);
+  const configProcessRecent = getConfigValue(config, 'watch.initialProcessing.processRecentVm', false);
+  
+  if (cleanoutMode || configCleanout) {
     await cleanoutUnprocessed();
   }
   
-  if (processRecentVmMode) {
+  if (processRecentVmMode || configProcessRecent) {
     // Parse the date range
     const { startDate, endDate } = parseDateRange(dateRangeValue);
     
@@ -647,21 +698,32 @@ async function startWatching() {
   console.log('Supported formats:', SUPPORTED_EXTENSIONS.join(', '));
   console.log('Press Ctrl+C to stop\n');
 
+  // Get watch configuration
+  const stabilityThreshold = getConfigValue(config, 'watch.stability.threshold', 2000);
+  const pollInterval = getConfigValue(config, 'watch.stability.pollInterval', 100);
+  const ignorePatterns = getConfigValue(config, 'fileProcessing.ignore.patterns', []);
+  const ignoreDirs = getConfigValue(config, 'fileProcessing.ignore.directories', []);
+  
+  // Ensure arrays are valid
+  const safeIgnorePatterns = Array.isArray(ignorePatterns) ? ignorePatterns : [];
+  const safeIgnoreDirs = Array.isArray(ignoreDirs) ? ignoreDirs : [];
+  
+  // Build ignore patterns for chokidar
+  const chokidarIgnored = [
+    ...safeIgnorePatterns.map(p => `**/${p}`),
+    ...safeIgnoreDirs.map(d => `**${d}/**`),
+    ...safeIgnoreDirs.map(d => `**${d}`)
+  ];
+  
   const watcher = chokidar.watch(dirsToWatch, { 
-  ignoreInitial: true,
-  persistent: true,
-  awaitWriteFinish: {
-    stabilityThreshold: 2000,
-    pollInterval: 100
-  },
-  ignored: [
-    '**/temp/**',    // Ignore temp directories
-    '**/temp',       // Ignore temp directories
-    '**/*.processing', // Ignore lock files
-    '**/chunk_*',    // Ignore chunk files
-    '**/temp.*'      // Ignore temp.* files
-  ]
-});
+    ignoreInitial: true,
+    persistent: true,
+    awaitWriteFinish: {
+      stabilityThreshold,
+      pollInterval
+    },
+    ignored: chokidarIgnored
+  });
 
   watcher
     .on('add', addToQueue)

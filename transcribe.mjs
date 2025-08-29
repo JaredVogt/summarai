@@ -31,15 +31,26 @@ import { transcribeWithWhisper } from './whisperAPI.mjs';
 import { transcribeWithScribe, createSegmentsContent } from './scribeAPI.mjs';
 import { convertToTempAAC, cleanupTempDir, splitAudioFile } from './audioProcessing.mjs';
 import { startSpinner, sanitizeFilename } from './utils.mjs';
+import { loadConfig, getConfigValue } from './configLoader.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const OUTPUT_DIR = '/Users/jaredvogt/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription';
+// Load configuration
+let config;
+try {
+  config = loadConfig();
+} catch (error) {
+  console.warn('Warning: Could not load config, using fallback values:', error.message);
+  config = { directories: { output: './output' } };
+}
 
-// Helper to get processed filenames from process_history.json
+const OUTPUT_DIR = getConfigValue(config, 'directories.output', './output');
+
+// Helper to get processed filenames from configured history file
 function getProcessedFilenames() {
-  const historyPath = path.join(__dirname, 'process_history.json');
+  const historyFile = getConfigValue(config, 'fileProcessing.history.file', './process_history.json');
+  const historyPath = path.isAbsolute(historyFile) ? historyFile : path.join(__dirname, historyFile);
   if (!fs.existsSync(historyPath)) return new Set();
   try {
     const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
@@ -50,9 +61,10 @@ function getProcessedFilenames() {
   }
 }
 
-// Helper to add processed file to process_history.json
+// Helper to add processed file to configured history file
 function addToProcessHistory(filename, timestamp) {
-  const historyPath = path.join(__dirname, 'process_history.json');
+  const historyFile = getConfigValue(config, 'fileProcessing.history.file', './process_history.json');
+  const historyPath = path.isAbsolute(historyFile) ? historyFile : path.join(__dirname, historyFile);
   
   // Check if directory is writable
   try {
@@ -239,40 +251,70 @@ export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQu
       // ElevenLabs Scribe can handle files up to 1GB
       console.log(`Audio file size (${fileSizeMB.toFixed(2)} MB) - ElevenLabs Scribe can handle up to 1GB`);
       
-      // If in silent mode, use preset values; otherwise ask for options
-      let selectedModel = model || 'scribe_v1';
-      let selectedMaxSpeakers = maxSpeakers;
+      // Get default values from config
+      const defaultModel = getConfigValue(config, 'transcription.scribe.model', 'scribe_v1');
+      const defaultMaxSpeakers = getConfigValue(config, 'transcription.scribe.maxSpeakers', null);
       
-      if (!silentMode) {
-        // Only ask for options if not in silent mode
+      // Use parameters if provided, otherwise use config defaults
+      let selectedModel = model || defaultModel;
+      let selectedMaxSpeakers = maxSpeakers !== undefined ? maxSpeakers : defaultMaxSpeakers;
+      
+      if (!silentMode && !model && maxSpeakers === undefined) {
+        // Only prompt if user hasn't specified parameters and not in silent mode
         const rl = readline.createInterface({ input, output });
-        try {
-          const modelAnswer = await rl.question('Which Scribe model would you like to use? (1: scribe_v1, 2: scribe_v1_experimental) [1]: ');
-          if (modelAnswer === '2') {
-            selectedModel = 'scribe_v1_experimental';
-          }
-        } catch {
-          // Use default
-        }
         
+        const speakersDisplay = selectedMaxSpeakers ? `max ${selectedMaxSpeakers}` : 'auto';
         try {
-          const speakersAnswer = await rl.question('Maximum number of speakers to detect (Enter for auto): ');
-          const speakersNum = parseInt(speakersAnswer, 10);
-          if (!isNaN(speakersNum) && speakersNum > 0 && speakersNum <= 32) {
-            selectedMaxSpeakers = speakersNum;
+          const overrideAnswer = await rl.question(`Use config defaults (${selectedModel}, ${speakersDisplay} speakers)? [Y/n]: `);
+          
+          if (overrideAnswer.toLowerCase() === 'n' || overrideAnswer.toLowerCase() === 'no') {
+            // User wants to override - ask for custom values
+            try {
+              const modelAnswer = await rl.question('Which Scribe model would you like to use? (1: scribe_v1, 2: scribe_v1_experimental) [current: ' + (selectedModel === 'scribe_v1_experimental' ? '2' : '1') + ']: ');
+              if (modelAnswer === '2') {
+                selectedModel = 'scribe_v1_experimental';
+              } else if (modelAnswer === '1') {
+                selectedModel = 'scribe_v1';
+              }
+              // If no answer, keep current value
+            } catch {
+              // Use current value
+            }
+            
+            try {
+              const speakersAnswer = await rl.question(`Maximum number of speakers to detect [current: ${speakersDisplay}]: `);
+              if (speakersAnswer.toLowerCase() === 'auto' || speakersAnswer === '') {
+                selectedMaxSpeakers = null;
+              } else {
+                const speakersNum = parseInt(speakersAnswer, 10);
+                if (!isNaN(speakersNum) && speakersNum > 0 && speakersNum <= 32) {
+                  selectedMaxSpeakers = speakersNum;
+                }
+              }
+            } catch {
+              // Use current value
+            }
           }
         } catch {
-          // Use default (auto)
+          // Use defaults
         }
         rl.close();
+      } else if (!silentMode) {
+        const speakersDisplay = selectedMaxSpeakers ? `max ${selectedMaxSpeakers}` : 'auto';
+        console.log(`Using specified settings: ${selectedModel}, ${speakersDisplay} speakers`);
       } else {
-        console.log(`Silent mode: Using model ${selectedModel} with auto speaker detection`);
+        const speakersDisplay = selectedMaxSpeakers ? `max ${selectedMaxSpeakers}` : 'auto';
+        console.log(`Silent mode: Using ${selectedModel} with ${speakersDisplay} speaker detection`);
       }
+      
+      // Get diarize setting from config
+      const diarizeSetting = getConfigValue(config, 'transcription.scribe.diarize', true);
       
       // Use ElevenLabs Scribe for transcription
       transcriptionData = await transcribeWithScribe(tempAACPath, {
         model: selectedModel,
         maxSpeakers: selectedMaxSpeakers,
+        diarize: diarizeSetting,
         tagAudioEvents: true,
         verbose: true
       });

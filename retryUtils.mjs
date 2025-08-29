@@ -1,6 +1,16 @@
 /**
  * Shared retry utility for API calls with exponential backoff
  */
+import { loadConfig, getConfigValue } from './configLoader.mjs';
+
+// Load configuration once for the module
+let config;
+try {
+  config = loadConfig();
+} catch (error) {
+  // Fallback to process.env if config cannot be loaded
+  config = null;
+}
 
 /**
  * Default function to determine if an error should trigger a retry
@@ -61,9 +71,9 @@ export function calculateRetryDelay(attempt, baseDelay = 1000, maxDelay = 30000)
  */
 export async function retryWithBackoff(fn, options = {}) {
   const {
-    maxRetries = parseInt(process.env.API_MAX_RETRIES) || 3,
-    baseDelay = parseInt(process.env.API_RETRY_BASE_DELAY) || 1000,
-    maxDelay = parseInt(process.env.API_RETRY_MAX_DELAY) || 30000,
+    maxRetries = config ? getConfigValue(config, 'api.retry.maxRetries', 3) : parseInt(process.env.API_MAX_RETRIES) || 3,
+    baseDelay = config ? getConfigValue(config, 'api.retry.baseDelay', 1000) : parseInt(process.env.API_RETRY_BASE_DELAY) || 1000,
+    maxDelay = config ? getConfigValue(config, 'api.retry.maxDelay', 30000) : parseInt(process.env.API_RETRY_MAX_DELAY) || 30000,
     shouldRetry = defaultShouldRetry,
     onRetry = null,
     operation = 'API call'

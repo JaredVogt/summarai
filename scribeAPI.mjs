@@ -3,8 +3,18 @@ import path from 'path';
 import { startSpinner } from './utils.mjs';
 import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
 import { retryWithBackoff, defaultShouldRetry } from './retryUtils.mjs';
+import { loadConfig, getConfigValue } from './configLoader.mjs';
 
 // Don't read the API key at import time, will access process.env directly when needed
+
+// Load configuration
+let config;
+try {
+  config = loadConfig();
+} catch (error) {
+  // Fallback to process.env if config cannot be loaded
+  config = null;
+}
 
 /**
  * Transcribe audio/video using ElevenLabs Scribe API
@@ -20,15 +30,26 @@ export async function transcribeWithScribe(audioFilePath, options = {}) {
     throw new Error('ELEVENLABS_API_KEY not set');
   }
 
+  // Get default values from config if available
+  const configDefaults = config ? {
+    model: getConfigValue(config, 'transcription.scribe.model', 'scribe_v1'),
+    language: getConfigValue(config, 'transcription.scribe.language', null),
+    tagAudioEvents: getConfigValue(config, 'transcription.scribe.tagAudioEvents', true),
+    diarize: getConfigValue(config, 'transcription.scribe.diarize', true),
+    maxSpeakers: getConfigValue(config, 'transcription.scribe.maxSpeakers', null),
+    timeoutInSeconds: getConfigValue(config, 'api.timeouts.scribe', 300)
+  } : {};
+  
   const {
-    model = 'scribe_v1', // or 'scribe_v1_experimental'
-    language = null, // ISO-639-1 or ISO-639-3 code (auto-detect if null)
-    tagAudioEvents = true, // Tag events like (laughter), (applause)
-    maxSpeakers = null, // Max speakers (1-32, auto if null)
-    verbose = false, // Whether to return verbose data
+    model = configDefaults.model || 'scribe_v1',
+    language = configDefaults.language || null,
+    tagAudioEvents = configDefaults.tagAudioEvents !== undefined ? configDefaults.tagAudioEvents : true,
+    diarize = configDefaults.diarize !== undefined ? configDefaults.diarize : true,
+    maxSpeakers = configDefaults.maxSpeakers || null,
+    verbose = false,
   } = options;
 
-  const timeoutInSeconds = options.timeoutInSeconds || parseInt(process.env.SCRIBE_TIMEOUT_SECONDS) || 300; // Timeout in seconds
+  const timeoutInSeconds = options.timeoutInSeconds || configDefaults.timeoutInSeconds || parseInt(process.env.SCRIBE_TIMEOUT_SECONDS) || 300;
 
   // Check file exists and validate size
   if (!fs.existsSync(audioFilePath)) {
@@ -52,14 +73,14 @@ export async function transcribeWithScribe(audioFilePath, options = {}) {
   
   // Prepare options for the speechToText.convert method
   const callSpecificOptions = {
-    modelId: model, // Keep model from options
-    tagAudioEvents: tagAudioEvents, // Keep tagAudioEvents from options
-    languageCode: 'eng', // HARDCODED FOR TEST
-    diarize: true,       // HARDCODED FOR TEST
+    modelId: model,
+    tagAudioEvents: tagAudioEvents,
+    languageCode: language || 'eng',
+    diarize: diarize,
   };
   
-  // Add optional parameters if they were intended to be used and are different from test
-  if (maxSpeakers && callSpecificOptions.diarize) { // Only add maxSpeakers if diarize is true
+  // Add maxSpeakers if diarization is enabled and value is provided
+  if (maxSpeakers && callSpecificOptions.diarize) {
     callSpecificOptions.maxSpeakers = maxSpeakers;
   }
   
