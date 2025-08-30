@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
-// Parse command line arguments FIRST, before any imports
+// Load environment variables FIRST
+import './env.mjs';
+
+// Parse command line arguments FIRST, before other imports
 const args = process.argv.slice(2);
 const cleanoutMode = args.includes('--cleanout');
 const dryRunMode = args.includes('--dry-run');
@@ -41,13 +44,90 @@ Examples:
 import chokidar from 'chokidar';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
+import { createInterface } from 'readline';
 import { processVoiceMemo } from './transcribe.mjs';
 import { cleanupTempDir } from './audioProcessing.mjs';
 import { loadConfig, getConfigValue } from './configLoader.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+/**
+ * Prompt user for input using readline
+ * @param {string} question - Question to ask the user
+ * @returns {Promise<string>} - User's response
+ */
+function askUser(question) {
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+/**
+ * Helper to expand ~ and resolve paths
+ * @param {string} filepath - File path to expand
+ * @returns {string} - Expanded absolute path
+ */
+function expandPath(filepath) {
+  if (!filepath) return null;
+  if (filepath.startsWith('~/')) {
+    return path.join(os.homedir(), filepath.slice(2));
+  }
+  return path.resolve(filepath);
+}
+
+/**
+ * Load all directory configurations from config
+ * @returns {Array} - Array of directory configuration objects
+ */
+function loadDirectoryConfigs() {
+  const watchDirs = getConfigValue(config, 'directories.watch', {});
+  
+  return Object.keys(watchDirs).map(key => {
+    const dir = watchDirs[key];
+    return {
+      name: dir.name,
+      watchPath: expandPath(dir.path),
+      processedPath: dir.processedPath ? expandPath(dir.processedPath) : null,
+      enabled: dir.enabled !== false,
+      moveAfterProcessing: dir.moveAfterProcessing || false,
+      outputPath: dir.outputPath ? expandPath(dir.outputPath) : './output',
+      processingOptions: {
+        transcriptionService: dir.transcriptionService,
+        compress: dir.compress,
+        bitrate: dir.bitrate,
+        maxSpeakers: dir.maxSpeakers,
+        diarize: dir.diarize,
+        model: dir.model
+      }
+    };
+  });
+}
+
+/**
+ * Find which directory config a file belongs to
+ * @param {string} filePath - Path to the file
+ * @param {Array} directoryConfigs - Array of directory configurations
+ * @returns {Object|null} - Directory configuration or null if not found
+ */
+function getFileDirectoryConfig(filePath, directoryConfigs) {
+  for (const config of directoryConfigs) {
+    if (filePath.startsWith(config.watchPath)) {
+      return config;
+    }
+  }
+  return null;
+}
 
 // Load configuration
 let config;
@@ -105,10 +185,8 @@ Examples:
   process.exit(0);
 }
 
-// Directory configurations from config
-const VOICE_MEMOS_DIR = getConfigValue(config, 'directories.voiceMemos');
-const GOOGLE_DRIVE_UNPROCESSED = getConfigValue(config, 'directories.googleDrive.unprocessed');
-const GOOGLE_DRIVE_PROCESSED = getConfigValue(config, 'directories.googleDrive.processed');
+// Global directory configurations - loaded once at startup
+let directoryConfigs = [];
 
 // Supported file extensions from config
 const AUDIO_EXTENSIONS = getConfigValue(config, 'fileProcessing.supportedExtensions.audio', []);
@@ -166,15 +244,11 @@ function isSupportedFile(filePath) {
 /**
  * Determine the source directory of a file
  * @param {string} filePath - Path to the file
- * @returns {string} - 'voiceMemos' or 'googleDrive'
+ * @returns {string} - Directory name or 'unknown'
  */
 function getFileSource(filePath) {
-  if (filePath.startsWith(VOICE_MEMOS_DIR)) {
-    return 'voiceMemos';
-  } else if (filePath.startsWith(GOOGLE_DRIVE_UNPROCESSED)) {
-    return 'googleDrive';
-  }
-  return 'unknown';
+  const dirConfig = getFileDirectoryConfig(filePath, directoryConfigs);
+  return dirConfig ? dirConfig.name : 'unknown';
 }
 
 /**
@@ -206,17 +280,18 @@ function removeLockFile(lockPath) {
  * @param {string} compressedPath - Compressed file path
  * @param {string} generatedName - Generated filename from processing
  * @param {string} tempDir - Temporary directory to clean up
+ * @param {string} processedDir - Directory to move processed files to
  */
-async function moveToProcessed(originalPath, compressedPath, generatedName, tempDir) {
+async function moveToProcessed(originalPath, compressedPath, generatedName, tempDir, processedDir) {
   try {
     // Ensure processed directory exists
-    if (!fs.existsSync(GOOGLE_DRIVE_PROCESSED)) {
-      fs.mkdirSync(GOOGLE_DRIVE_PROCESSED, { recursive: true });
+    if (!fs.existsSync(processedDir)) {
+      fs.mkdirSync(processedDir, { recursive: true });
     }
     
     // Compressed files are always .m4a
     const newFilename = generatedName + '.m4a';
-    const newPath = path.join(GOOGLE_DRIVE_PROCESSED, newFilename);
+    const newPath = path.join(processedDir, newFilename);
     
     // Get file sizes for logging
     const originalStats = fs.statSync(originalPath);
@@ -431,17 +506,26 @@ async function processRecentVoiceMemos(startDate, endDate, dryRun = false) {
   console.log(`\n[${dryRun ? 'Dry Run' : 'Process Recent VM'}] Scanning Voice Memos from ${startDateStr} to ${endDateStr}...`);
   
   try {
+    // Find Voice Memos directory config
+    const voiceMemoConfig = directoryConfigs.find(config => 
+      config.name === 'Voice Memos' || config.name.toLowerCase().includes('voice memo'));
+    
+    if (!voiceMemoConfig) {
+      console.log('Voice Memos directory not configured in directories.watch');
+      return;
+    }
+    
     // Check if Voice Memos directory exists
-    if (!fs.existsSync(VOICE_MEMOS_DIR)) {
-      console.log('Voice Memos directory not found:', VOICE_MEMOS_DIR);
+    if (!fs.existsSync(voiceMemoConfig.watchPath)) {
+      console.log('Voice Memos directory not found:', voiceMemoConfig.watchPath);
       return;
     }
     
     // Get all files in the directory
-    const files = fs.readdirSync(VOICE_MEMOS_DIR);
+    const files = fs.readdirSync(voiceMemoConfig.watchPath);
     const allVoiceMemoFiles = files
       .filter(file => isSupportedFile(file) && !file.endsWith('.processing'))
-      .map(file => path.join(VOICE_MEMOS_DIR, file))
+      .map(file => path.join(voiceMemoConfig.watchPath, file))
       .map(filePath => {
         const stats = fs.statSync(filePath);
         return {
@@ -542,17 +626,27 @@ async function cleanoutUnprocessed() {
   console.log('\n[Cleanout Mode] Processing existing files in unprocessed directory...');
   
   try {
+    // Find Google Drive unprocessed directory config
+    const googleDriveConfig = directoryConfigs.find(config => 
+      config.name === 'Google Drive Unprocessed' || 
+      (config.name.toLowerCase().includes('google') && config.name.toLowerCase().includes('drive')));
+    
+    if (!googleDriveConfig) {
+      console.log('Google Drive unprocessed directory not configured in directories.watch');
+      return;
+    }
+    
     // Check if directory exists
-    if (!fs.existsSync(GOOGLE_DRIVE_UNPROCESSED)) {
-      console.log('Google Drive unprocessed directory not found:', GOOGLE_DRIVE_UNPROCESSED);
+    if (!fs.existsSync(googleDriveConfig.watchPath)) {
+      console.log('Google Drive unprocessed directory not found:', googleDriveConfig.watchPath);
       return;
     }
     
     // Get all files in the directory
-    const files = fs.readdirSync(GOOGLE_DRIVE_UNPROCESSED);
+    const files = fs.readdirSync(googleDriveConfig.watchPath);
     const supportedFiles = files
       .filter(file => isSupportedFile(file) && !file.endsWith('.processing'))
-      .map(file => path.join(GOOGLE_DRIVE_UNPROCESSED, file))
+      .map(file => path.join(googleDriveConfig.watchPath, file))
       .map(filePath => ({
         path: filePath,
         stats: fs.statSync(filePath)
@@ -595,7 +689,7 @@ async function cleanoutUnprocessed() {
 }
 
 /**
- * Process a new file
+ * Process a new file using directory-specific configuration
  * @param {string} filePath - Path to the file to process
  */
 async function processFile(filePath) {
@@ -610,8 +704,13 @@ async function processFile(filePath) {
     return;
   }
   
-  const source = getFileSource(filePath);
-  console.log(`Processing: ${path.basename(filePath)}`);
+  const dirConfig = getFileDirectoryConfig(filePath, directoryConfigs);
+  if (!dirConfig) {
+    console.error(`File ${filePath} doesn't match any watched directory`);
+    return;
+  }
+  
+  console.log(`Processing from ${dirConfig.name}: ${path.basename(filePath)}`);
   
   // Wait for configured delay to ensure file is fully written
   const initialDelay = getConfigValue(config, 'watch.queue.initialDelay', 5000);
@@ -630,36 +729,41 @@ async function processFile(filePath) {
   const lock = createLockFile(filePath);
   
   try {
-    console.log('Processing file with configured options...');
+    console.log('Processing file with directory-specific options...');
     
-    // Get processing options from config
-    const silentMode = getConfigValue(config, 'modes.silent.enabled', true);
-    const transcriptionService = getConfigValue(config, 'transcription.defaultService', 'scribe');
-    const modelName = transcriptionService === 'scribe' ? 
-      getConfigValue(config, 'transcription.scribe.model', 'scribe_v1') :
-      getConfigValue(config, 'transcription.whisper.model', 'whisper-1');
-    const maxSpeakers = getConfigValue(config, 'transcription.scribe.maxSpeakers', null);
+    // Merge directory-specific options with defaults
+    const processingOptions = {
+      silentMode: getConfigValue(config, 'modes.silent.enabled', true),
+      transcriptionService: dirConfig.processingOptions.transcriptionService || 
+                            getConfigValue(config, 'transcription.defaultService', 'scribe'),
+      model: dirConfig.processingOptions.model || 
+             (dirConfig.processingOptions.transcriptionService === 'scribe' ? 
+              getConfigValue(config, 'transcription.scribe.model', 'scribe_v1') :
+              getConfigValue(config, 'transcription.whisper.model', 'whisper-1')),
+      maxSpeakers: dirConfig.processingOptions.maxSpeakers || 
+                   getConfigValue(config, 'transcription.scribe.maxSpeakers', null),
+      outputPath: dirConfig.outputPath,
+      compress: dirConfig.processingOptions.compress !== false,
+      bitrate: dirConfig.processingOptions.bitrate || 
+               getConfigValue(config, 'audio.compression.normal.bitrate', '48k'),
+      diarize: dirConfig.processingOptions.diarize !== false,
+      fromDirectory: dirConfig.name
+    };
     
-    // Process with configured options
-    const result = await processVoiceMemo(filePath, {
-      silentMode,
-      transcriptionService,
-      model: modelName,
-      maxSpeakers,
-      fromGoogleDrive: source === 'googleDrive' // Pass flag to indicate Google Drive source
-    });
+    const result = await processVoiceMemo(filePath, processingOptions);
     
     console.log('✓ Processing completed successfully');
     
-    // If from Google Drive, move compressed file to processed folder
-    if (source === 'googleDrive' && result && result.finalName) {
+    // Handle post-processing based on directory config
+    if (dirConfig.moveAfterProcessing && result && result.finalName) {
       if (result.compressedPath) {
         // Move compressed file and delete original
-        await moveToProcessed(filePath, result.compressedPath, result.finalName, result.tempDir);
+        await moveToProcessed(filePath, result.compressedPath, result.finalName, 
+                             result.tempDir, dirConfig.processedPath);
       } else {
         // Fallback to old behavior if no compressed path
         console.warn('No compressed path returned, falling back to moving original file');
-        await moveToProcessed(filePath, filePath, result.finalName, null);
+        await moveToProcessed(filePath, filePath, result.finalName, null, dirConfig.processedPath);
       }
     }
     
@@ -673,39 +777,106 @@ async function processFile(filePath) {
   }
 }
 
-// Verify directories exist based on config
-const dirsToWatch = [];
-
-const watchVoiceMemos = getConfigValue(config, 'watch.enabled.voiceMemos', true);
-const watchGoogleDrive = getConfigValue(config, 'watch.enabled.googleDrive', true);
-
-if (watchVoiceMemos && VOICE_MEMOS_DIR) {
-  if (fs.existsSync(VOICE_MEMOS_DIR)) {
-    dirsToWatch.push(VOICE_MEMOS_DIR);
-    console.log('✓ Watching Apple Voice Memos:', VOICE_MEMOS_DIR);
-  } else {
-    console.log('✗ Apple Voice Memos directory not found:', VOICE_MEMOS_DIR);
-    console.log('  Update directories.voiceMemos in config.yaml if needed');
+/**
+ * Validate directories and prepare watching list with interactive prompting
+ */
+async function validateDirectories() {
+  directoryConfigs = loadDirectoryConfigs();
+  const validConfigs = [];
+  
+  console.log('\nValidating configured directories...\n');
+  
+  for (const dirConfig of directoryConfigs) {
+    if (!dirConfig.enabled) {
+      console.log(`⏭️  Skipping disabled: ${dirConfig.name}`);
+      continue;
+    }
+    
+    const exists = fs.existsSync(dirConfig.watchPath);
+    
+    if (!exists) {
+      console.log(`⚠️  ${dirConfig.name} directory not found:`);
+      console.log(`    Path: ${dirConfig.watchPath}`);
+      
+      const answer = await askUser(`\nHow would you like to proceed?\n` +
+        `  [1] Skip this directory\n` +
+        `  [2] Use current directory\n` +
+        `  [3] Create the directory\n` +
+        `  [4] Exit to fix configuration\n` +
+        `Choice (1-4): `);
+      
+      switch(answer) {
+        case '1':
+          console.log(`→ Skipping ${dirConfig.name}\n`);
+          continue;
+          
+        case '2':
+          dirConfig.watchPath = process.cwd();
+          if (dirConfig.moveAfterProcessing && !dirConfig.processedPath) {
+            dirConfig.processedPath = path.join(process.cwd(), 'processed');
+          }
+          if (!dirConfig.outputPath || dirConfig.outputPath === './output') {
+            dirConfig.outputPath = process.cwd();
+          }
+          console.log(`→ Using current directory for ${dirConfig.name}\n`);
+          break;
+          
+        case '3':
+          fs.mkdirSync(dirConfig.watchPath, { recursive: true });
+          console.log(`✓ Created directory: ${dirConfig.watchPath}\n`);
+          break;
+          
+        case '4':
+        default:
+          console.log('\nPlease update your config.yaml and try again.');
+          process.exit(0);
+      }
+    }
+    
+    // Validate processed directory if needed
+    if (dirConfig.moveAfterProcessing && dirConfig.processedPath && !fs.existsSync(dirConfig.processedPath)) {
+      console.log(`Creating processed directory for ${dirConfig.name}...`);
+      fs.mkdirSync(dirConfig.processedPath, { recursive: true });
+      console.log(`✓ Created: ${dirConfig.processedPath}`);
+    }
+    
+    // Validate output directory
+    if (dirConfig.outputPath && !fs.existsSync(dirConfig.outputPath)) {
+      console.log(`Creating output directory for ${dirConfig.name}...`);
+      fs.mkdirSync(dirConfig.outputPath, { recursive: true });
+      console.log(`✓ Created: ${dirConfig.outputPath}`);
+    }
+    
+    if (fs.existsSync(dirConfig.watchPath)) {
+      validConfigs.push(dirConfig);
+      console.log(`✓ Watching ${dirConfig.name}: ${dirConfig.watchPath}`);
+    }
   }
-}
-
-if (watchGoogleDrive && GOOGLE_DRIVE_UNPROCESSED) {
-  if (fs.existsSync(GOOGLE_DRIVE_UNPROCESSED)) {
-    dirsToWatch.push(GOOGLE_DRIVE_UNPROCESSED);
-    console.log('✓ Watching Google Drive unprocessed:', GOOGLE_DRIVE_UNPROCESSED);
-  } else {
-    console.log('✗ Google Drive unprocessed directory not found:', GOOGLE_DRIVE_UNPROCESSED);
-    console.log('  Update directories.googleDrive.unprocessed in config.yaml');
+  
+  if (validConfigs.length === 0) {
+    console.error('\n❌ No directories are being watched.');
+    console.error('All configured directories were either skipped or not found.');
+    console.error('\nTo fix this:');
+    console.error('  1. Check your config.yaml file');
+    console.error('  2. Ensure at least one directory path is correct');
+    console.error('  3. Run with --help for more information');
+    process.exit(1);
   }
-}
-
-if (dirsToWatch.length === 0) {
-  console.error('\nNo valid directories to watch. Exiting.');
-  process.exit(1);
+  
+  console.log(`\n✓ Watching ${validConfigs.length} director${validConfigs.length === 1 ? 'y' : 'ies'}\n`);
+  
+  // Update global directory configs with validated ones
+  directoryConfigs = validConfigs;
+  
+  // Return paths for chokidar
+  return validConfigs.map(config => config.watchPath);
 }
 
 // Run special modes if requested
 async function startWatching() {
+  // Validate directories and get list to watch
+  const dirsToWatch = await validateDirectories();
+  
   // Check config for initial processing modes
   const configCleanout = getConfigValue(config, 'watch.initialProcessing.cleanout', false);
   const configProcessRecent = getConfigValue(config, 'watch.initialProcessing.processRecentVm', false);

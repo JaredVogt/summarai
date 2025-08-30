@@ -1,11 +1,11 @@
 {
-  "name": "watchdirectories",
+  "name": "summarai",
   "version": "1.0.0",
-  "description": "Voice memo and audio file processor with automatic transcription",
-  "main": "watchDirectories.mjs",
+  "description": "summarai - Audio file processor with automatic transcription and summarization",
+  "main": "summarai.mjs",
   "type": "module",
   "scripts": {
-    "start": "bun watchDirectories.mjs",
+    "start": "bun summarai.mjs",
     "build": "bun run build-executable.mjs",
     "build:minified": "bun run build-executable.mjs --minify",
     "build:zip": "bun run build-executable.mjs --minify --zip",

@@ -16,8 +16,8 @@
 #        (Usually triggered automatically by Keyboard Maestro)
 
 SOURCE_DIR="/Volumes/IC RECORDER/REC_FILE/FOLDER01"
-DEST_DIR="/Users/jaredvogt/projects/processVMs/input_files"
-LOG_FILE="/Users/jaredvogt/projects/processVMs/.move_log"
+DEST_DIR="/Users/jaredvogt/projects/summarai/input_files"
+LOG_FILE="/Users/jaredvogt/projects/summarai/.move_log"
 
 # Create destination directory if it doesn't exist
 mkdir -p "$DEST_DIR"

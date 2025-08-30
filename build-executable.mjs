@@ -23,7 +23,7 @@ if (fs.existsSync(OUTPUT_DIR)) {
 }
 fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
-console.log('Building watchDirectories executable for macOS ARM64...');
+console.log('Building summarai executable for macOS ARM64...');
 console.log(`Version: ${VERSION}`);
 console.log(`Build Date: ${BUILD_DATE}`);
 console.log(`Minification: ${MINIFY ? 'enabled' : 'disabled'}`);
@@ -35,8 +35,8 @@ const buildArgs = [
   '--target=bun-darwin-arm64',
   `--define=BUILD_VERSION='"${VERSION}"'`,
   `--define=BUILD_DATE='"${BUILD_DATE}"'`,
-  './watchDirectories.mjs',
-  '--outfile', path.join(OUTPUT_DIR, 'watchDirectories')
+  './summarai.mjs',
+  '--outfile', path.join(OUTPUT_DIR, 'summarai')
 ];
 
 if (MINIFY) {
@@ -50,13 +50,24 @@ try {
   console.log('✓ Build successful!');
   
   // Copy config.yaml to release directory
-  console.log('Copying configuration file...');
+  console.log('Copying configuration files...');
   if (fs.existsSync('config.yaml')) {
     fs.copyFileSync('config.yaml', path.join(OUTPUT_DIR, 'config.yaml'));
     console.log('✓ Copied config.yaml');
   } else if (fs.existsSync('example.config.yaml')) {
     fs.copyFileSync('example.config.yaml', path.join(OUTPUT_DIR, 'config.yaml'));
     console.log('✓ Copied example.config.yaml as config.yaml');
+  }
+  
+  // Copy context files that users can customize
+  if (fs.existsSync('instructions.md')) {
+    fs.copyFileSync('instructions.md', path.join(OUTPUT_DIR, 'instructions.md'));
+    console.log('✓ Copied instructions.md');
+  }
+  
+  if (fs.existsSync('nomenclature.txt')) {
+    fs.copyFileSync('nomenclature.txt', path.join(OUTPUT_DIR, 'nomenclature.txt'));
+    console.log('✓ Copied nomenclature.txt');
   }
   
   // Create .env.example
@@ -77,19 +88,19 @@ ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
   console.log('✓ Created .env.example');
   
   // Create README specifically for the executable release
-  const readme = `# watchDirectories Executable
+  const readme = `# summarai Executable
 
 ## Quick Start
 
-This is a standalone executable version of watchDirectories for macOS ARM64 (Apple Silicon).
+This is a standalone executable version of summarai for macOS ARM64 (Apple Silicon).
 
 ### First Run on macOS
 
 When running this executable for the first time, macOS will show a security warning:
-"watchDirectories cannot be opened because it is from an unidentified developer"
+"summarai cannot be opened because it is from an unidentified developer"
 
 **To run it:**
-1. Right-click (or Control-click) on \`watchDirectories\`
+1. Right-click (or Control-click) on \`summarai\`
 2. Select "Open" from the context menu
 3. Click "Open" in the security dialog
 4. This only needs to be done once
@@ -107,9 +118,14 @@ When running this executable for the first time, macOS will show a security warn
      - \`directories.googleDrive.unprocessed\`: Path to Google Drive folder
      - \`transcription.defaultService\`: Choose 'whisper' or 'scribe'
 
-3. **Run the Executable**
+3. **Customize Context Files (Optional)**
+   - Edit \`instructions.md\` to customize Claude's processing instructions
+   - Edit \`nomenclature.txt\` to add domain-specific terms and terminology
+   - These files control how transcripts are processed and summarized
+
+4. **Run the Executable**
    \`\`\`bash
-   ./watchDirectories
+   ./summarai
    \`\`\`
 
 ## Usage
@@ -118,19 +134,19 @@ When running this executable for the first time, macOS will show a security warn
 
 \`\`\`bash
 # Watch directories for new files
-./watchDirectories
+./summarai
 
 # Process recent voice memos (last 120 days)
-./watchDirectories --process-recent-vm
+./summarai --process-recent-vm
 
 # Process voice memos from specific date range
-./watchDirectories --process-recent-vm 1-1-25:1-31-25
+./summarai --process-recent-vm 1-1-25:1-31-25
 
 # Process existing Google Drive files
-./watchDirectories --cleanout
+./summarai --cleanout
 
 # Show help and all options
-./watchDirectories --help
+./summarai --help
 \`\`\`
 
 ### Command Options
@@ -150,6 +166,31 @@ The executable watches two directories:
 2. **Google Drive Unprocessed** - Files are transcribed and moved to processed folder
 
 Supported formats: .m4a, .mp3, .wav, .mp4, .mov
+
+## Customizing Processing
+
+### Context Files
+
+You can customize how the application processes and summarizes your transcripts by editing these files:
+
+#### \`instructions.md\`
+Controls how Claude processes and summarizes transcripts. You can modify:
+- Summary format and length requirements
+- Keyword extraction rules  
+- Action item identification
+- Output formatting preferences
+
+#### \`nomenclature.txt\`
+Contains domain-specific terms and terminology that helps both transcription services and Claude:
+- Company/product names (e.g., "Wolff", "ProPatch")
+- Technical jargon and abbreviations
+- Industry-specific terms
+- Common replacements for misheard words
+
+**How it works:**
+- The application first checks for these files in the same directory as the executable
+- If not found, it uses embedded default content
+- This allows you to customize without breaking functionality
 
 ## Troubleshooting
 
@@ -180,21 +221,23 @@ For issues or questions, see the main project repository.
   console.log('✓ Created README.md');
   
   // Get file size
-  const stats = fs.statSync(path.join(OUTPUT_DIR, 'watchDirectories'));
+  const stats = fs.statSync(path.join(OUTPUT_DIR, 'summarai'));
   const sizeMB = (stats.size / (1024 * 1024)).toFixed(2);
   
   console.log('\\n📦 Build Summary:');
   console.log(`   Output: ${OUTPUT_DIR}/`);
   console.log(`   Executable size: ${sizeMB} MB`);
   console.log(`   Files in release directory:`);
-  console.log(`   - watchDirectories (executable)`);
+  console.log(`   - summarai (executable)`);
   console.log(`   - config.yaml`);
+  console.log(`   - instructions.md (customizable Claude prompts)`);
+  console.log(`   - nomenclature.txt (customizable terminology)`);
   console.log(`   - .env.example`);
   console.log(`   - README.md`);
   
   // Create zip archive if requested
   if (CREATE_ZIP) {
-    const archiveName = `watchDirectories-macos-arm64-v${VERSION}.zip`;
+    const archiveName = `summarai-macos-arm64-v${VERSION}.zip`;
     console.log(`\\nCreating distribution archive: ${archiveName}`);
     
     await $`cd release && zip -r ../${archiveName} .`;

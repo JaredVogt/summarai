@@ -1,38 +1,10 @@
-import dotenv from 'dotenv';
+// Load environment variables first
+import './env.mjs';
+
+import axios from 'axios';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
-
-// Load .env files - try current working directory first (for executable), then home directory
-const possibleEnvPaths = [
-  path.join(process.cwd(), '.env'),
-  path.join(os.homedir(), '.env')
-];
-
-let envLoaded = false;
-for (const envPath of possibleEnvPaths) {
-  if (fs.existsSync(envPath)) {
-    dotenv.config({ path: envPath });
-    envLoaded = true;
-    console.log(`✓ Loaded environment variables from ${envPath}`);
-    break;
-  }
-}
-
-if (!envLoaded) {
-  console.error(`ERROR: .env file not found in any of these locations:`);
-  possibleEnvPaths.forEach(p => console.error(`  - ${p}`));
-  console.error(`\nPlease create a .env file with your API keys.`);
-  process.exit(1);
-}
-
-// Also try to load local .env file if it exists and is different
-const localEnvPath = '.env';
-if (fs.existsSync(localEnvPath) && !possibleEnvPaths.includes(path.resolve(localEnvPath))) {
-  dotenv.config({ path: localEnvPath });
-}
-
-import axios from 'axios';
 import FormData from 'form-data';
 import { fileURLToPath } from 'url';
 import { getLatestVoiceMemos } from './getLatestVoiceMemo.mjs';
@@ -63,7 +35,7 @@ const OUTPUT_DIR = getConfigValue(config, 'directories.output', './output');
 // Helper to get processed filenames from configured history file
 function getProcessedFilenames() {
   const historyFile = getConfigValue(config, 'fileProcessing.history.file', './process_history.json');
-  const historyPath = path.isAbsolute(historyFile) ? historyFile : path.join(__dirname, historyFile);
+  const historyPath = path.isAbsolute(historyFile) ? historyFile : historyFile;
   if (!fs.existsSync(historyPath)) return new Set();
   try {
     const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
@@ -77,7 +49,7 @@ function getProcessedFilenames() {
 // Helper to add processed file to configured history file
 function addToProcessHistory(filename, timestamp) {
   const historyFile = getConfigValue(config, 'fileProcessing.history.file', './process_history.json');
-  const historyPath = path.isAbsolute(historyFile) ? historyFile : path.join(__dirname, historyFile);
+  const historyPath = path.isAbsolute(historyFile) ? historyFile : historyFile;
   
   // Check if directory is writable
   try {
@@ -178,7 +150,7 @@ async function transcribeLatestVoiceMemo(transcriptionService) {
 }
 
 // Exportable main workflow for automation
-export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQuality = false, transcriptionService = 'scribe', silentMode = false, model = null, maxSpeakers = null, fromGoogleDrive = false } = {}) {
+export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQuality = false, transcriptionService = 'scribe', silentMode = false, model = null, maxSpeakers = null, fromGoogleDrive = false, outputPath = null } = {}) {
   const originalFileName = path.basename(filePath);
   let recordingDateTime = null;
   let recordingDateTimePrefix = null;
@@ -346,7 +318,7 @@ export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQu
   
     // Send to Claude and write output (markdown + audio)
     // Pass the original .m4a path, not the temp AAC
-    const { finalName, targetDir, mdFilePath } = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, OUTPUT_DIR, originalFileName);
+    const { finalName, targetDir, mdFilePath } = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, outputPath || OUTPUT_DIR, originalFileName);
     
     // Write segments to a file
     const segmentsFile = path.join(targetDir, `${finalName}_segments.txt`);

@@ -1,4 +1,4 @@
-# Voice Memo Processing & Transcription Workflow
+# summarai - Audio Processing & Transcription System
 
 A comprehensive system for automatically processing voice memos and audio/video files with transcription, summarization, and intelligent organization.
 
@@ -86,23 +86,23 @@ Monitor directories for new files and process them automatically:
 
 ```bash
 # Basic watching
-node watchDirectories.mjs
+node summarai.mjs
 
 # Process all existing Google Drive files first, then watch
-node watchDirectories.mjs --cleanout
+node summarai.mjs --cleanout
 
 # Process recent Voice Memos from last 120 days (configurable)
-node watchDirectories.mjs --process-recent-vm
+node summarai.mjs --process-recent-vm
 
 # Process Voice Memos from specific date range
-node watchDirectories.mjs --process-recent-vm 7-1-25        # July 1, 2025 to now
-node watchDirectories.mjs --process-recent-vm 4-1-25:5-31-25  # April 1 to May 31, 2025
+node summarai.mjs --process-recent-vm 7-1-25        # July 1, 2025 to now
+node summarai.mjs --process-recent-vm 4-1-25:5-31-25  # April 1 to May 31, 2025
 
 # Dry run to see what would be processed
-node watchDirectories.mjs --process-recent-vm --dry-run
+node summarai.mjs --process-recent-vm --dry-run
 
 # Show all available options
-node watchDirectories.mjs --help
+node summarai.mjs --help
 ```
 
 ## ⚙️ Configuration
@@ -180,7 +180,7 @@ export PROCESSVM_AUDIO_PROCESSING_SPEEDADJUSTMENT="1.0"
 1. **Clone the repository**
    ```bash
    git clone <repository-url>
-   cd processVMs
+   cd summarai
    ```
 
 2. **Install dependencies**
