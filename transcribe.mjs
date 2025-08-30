@@ -3,21 +3,34 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 
-// Path to .env file in home directory (for API keys)
-const homeEnvPath = path.join(os.homedir(), '.env');
+// Load .env files - try current working directory first (for executable), then home directory
+const possibleEnvPaths = [
+  path.join(process.cwd(), '.env'),
+  path.join(os.homedir(), '.env')
+];
 
-// Check if home .env file exists
-if (!fs.existsSync(homeEnvPath)) {
-  console.error(`ERROR: .env file not found in home directory (${homeEnvPath})`);
+let envLoaded = false;
+for (const envPath of possibleEnvPaths) {
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath });
+    envLoaded = true;
+    console.log(`✓ Loaded environment variables from ${envPath}`);
+    break;
+  }
+}
+
+if (!envLoaded) {
+  console.error(`ERROR: .env file not found in any of these locations:`);
+  possibleEnvPaths.forEach(p => console.error(`  - ${p}`));
+  console.error(`\nPlease create a .env file with your API keys.`);
   process.exit(1);
 }
 
-// Load API keys from home directory .env file
-dotenv.config({ path: homeEnvPath });
-
-// Load project-specific configuration from local .env file
-// This will merge with existing env vars, not overwrite them
-dotenv.config();
+// Also try to load local .env file if it exists and is different
+const localEnvPath = '.env';
+if (fs.existsSync(localEnvPath) && !possibleEnvPaths.includes(path.resolve(localEnvPath))) {
+  dotenv.config({ path: localEnvPath });
+}
 
 import axios from 'axios';
 import FormData from 'form-data';
@@ -532,8 +545,8 @@ async function processInSilentMode(filePath) {
   }
 }
 
-// Run if called directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run if called directly (but not when imported by watchDirectories or running in executable)
+if (import.meta.url === `file://${process.argv[1]}` && !process.argv[1]?.includes('watchDirectories')) {
   const parsedArgs = parseCommandLineArgs(); // This will exit if --help is passed
   
   // The order of checks is important - silent mode takes highest precedence

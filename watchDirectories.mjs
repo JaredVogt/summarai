@@ -1,5 +1,43 @@
 #!/usr/bin/env node
 
+// Parse command line arguments FIRST, before any imports
+const args = process.argv.slice(2);
+const cleanoutMode = args.includes('--cleanout');
+const dryRunMode = args.includes('--dry-run');
+const showHelp = args.includes('--help') || args.includes('-h');
+
+// Show help immediately if requested, before any imports
+if (showHelp) {
+  console.log(`
+Usage: node watchDirectories.mjs [options]
+
+Options:
+  --cleanout                        Process all existing files in Google Drive unprocessed folder before watching
+  --process-recent-vm [date-range]  Process unprocessed Voice Memos from specified date range
+                                    Formats: MM-DD-YY (from date to now)
+                                            MM-DD-YY:MM-DD-YY (date range)
+                                            (no date = last 120 days)
+  --dry-run                         When used with --process-recent-vm, show what would be processed without actually processing
+  --help, -h                        Show this help message
+
+This tool watches for new audio/video files in:
+- Apple Voice Memos directory
+- Google Drive unprocessed directory
+
+Files from Google Drive are moved to processed folder after successful processing.
+Voice Memos files are never moved.
+
+Examples:
+  node watchDirectories.mjs --process-recent-vm                       # Process Voice Memos from last 120 days
+  node watchDirectories.mjs --process-recent-vm --dry-run             # See what would be processed (last 120 days)
+  node watchDirectories.mjs --process-recent-vm 7-1-25                # Process from July 1, 2025 to now
+  node watchDirectories.mjs --process-recent-vm 4-1-25:5-31-25        # Process from April 1 to May 31, 2025
+  node watchDirectories.mjs --process-recent-vm 7-1-25 --dry-run      # Dry run from July 1, 2025 to now
+  node watchDirectories.mjs --cleanout                                # Process Google Drive files then watch
+  `);
+  process.exit(0);
+}
+
 import chokidar from 'chokidar';
 import path from 'path';
 import fs from 'fs';
@@ -21,12 +59,6 @@ try {
   console.error('Please ensure config.yaml exists and is valid.');
   process.exit(1);
 }
-
-// Parse command line arguments
-const args = process.argv.slice(2);
-const cleanoutMode = args.includes('--cleanout');
-const dryRunMode = args.includes('--dry-run');
-const showHelp = args.includes('--help') || args.includes('-h');
 
 // Parse --process-recent-vm with optional date range
 let processRecentVmMode = false;

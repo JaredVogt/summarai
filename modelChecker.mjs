@@ -62,6 +62,11 @@ function parseModelsFromHtml(html) {
  * @returns {Object|null} - Cached data or null if expired/not found
  */
 function loadCache() {
+  // Disable caching when running as executable to avoid virtual filesystem issues
+  if (process.argv[1]?.includes('watchDirectories')) {
+    return null;
+  }
+  
   try {
     if (fs.existsSync(CACHE_FILE)) {
       const data = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
@@ -81,6 +86,11 @@ function loadCache() {
  * @param {Object} data - Model data to cache
  */
 function saveCache(data) {
+  // Disable caching when running as executable to avoid virtual filesystem issues
+  if (process.argv[1]?.includes('watchDirectories')) {
+    return;
+  }
+  
   try {
     fs.writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2));
   } catch (error) {

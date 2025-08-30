@@ -347,7 +347,22 @@ function validateConfig(config) {
 export function loadConfig(configPath = null) {
   // Determine config file path
   if (!configPath) {
-    configPath = path.join(__dirname, 'config.yaml');
+    // Check if running as executable - look for config in current working directory first
+    const possiblePaths = [
+      path.join(process.cwd(), 'config.yaml'),
+      path.join(__dirname, 'config.yaml')
+    ];
+    
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        configPath = p;
+        break;
+      }
+    }
+    
+    if (!configPath) {
+      configPath = possiblePaths[0]; // Default to first path for error message
+    }
   }
   
   // Check if config file exists
@@ -402,7 +417,18 @@ export function getConfigValue(config, path, defaultValue = null) {
  */
 export function configExists(configPath = null) {
   if (!configPath) {
-    configPath = path.join(__dirname, 'config.yaml');
+    // Check if running as executable - look for config in current working directory first
+    const possiblePaths = [
+      path.join(process.cwd(), 'config.yaml'),
+      path.join(__dirname, 'config.yaml')
+    ];
+    
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        return true;
+      }
+    }
+    return false;
   }
   return fs.existsSync(configPath);
 }
