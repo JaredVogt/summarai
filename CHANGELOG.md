@@ -2,6 +2,42 @@
 
 All notable changes to the Voice Memo Processing & Transcription Workflow project are documented in this file.
 
+## [2.1.0] - 2025-09-05 - Security & Reliability Overhaul
+
+### 🔒 Major Security Improvements
+- **Command Injection Prevention**: All external commands (FFmpeg/FFprobe) now use secure parameter passing
+- **Input Validation Framework**: Comprehensive validation for all user inputs and file paths
+- **Path Traversal Protection**: Robust protection against directory traversal attacks
+- **API Key Security**: Automatic validation of required API keys on startup
+- **Filename Sanitization**: Safe handling of user-provided filenames
+
+### 🛡️ New Security Features
+- **Validation Module** (`src/validation.mjs`): Centralized input validation and sanitization
+- **Error Handling Framework** (`src/errors.mjs`): Consistent error handling with detailed logging
+- **Secure Command Execution**: Replaced shell command interpolation with spawn-based execution
+- **File Size Limits**: Configurable limits to prevent resource exhaustion
+- **Security Test Suite**: Comprehensive tests for all security features
+
+### 🧪 Testing Infrastructure
+- **Complete Test Suite**: 46+ passing tests covering validation, security, and functionality
+- **Bun Compatibility Tests**: Full support for Bun runtime including VFS workarounds
+- **Security Tests**: Path traversal, command injection, and input validation testing
+- **Integration Tests**: End-to-end workflow testing with error scenarios
+- **Continuous Validation**: Automated testing of critical security features
+
+### 🚀 Reliability Improvements
+- **Enhanced Error Handling**: Graceful error recovery with detailed context logging
+- **Bun VFS Compatibility**: Memory-based caching for Bun executable compatibility
+- **Input Sanitization**: All user inputs are validated and sanitized before processing
+- **Resource Management**: Proper cleanup and resource limit enforcement
+
+### 📚 Documentation Updates
+- **Security Documentation**: Comprehensive security feature documentation
+- **Testing Guide**: Instructions for running and extending the test suite
+- **Migration Notes**: Security-related breaking changes and migration guidance
+
+---
+
 ## [2.0.0] - 2025-08-29 - Configuration System Overhaul
 
 ### 🎉 Major Features

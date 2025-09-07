@@ -7,3 +7,9 @@ input_files/
 .move_log
 move_debug.log
 .model-cache.json
+
+# Bun build files
+.*.bun-build
+
+# Cruft folder for temporary markdown files
+cruft/

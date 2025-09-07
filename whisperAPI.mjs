@@ -1,22 +1,58 @@
 import axios from 'axios';
 import FormData from 'form-data';
 import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { startSpinner } from './utils.mjs';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 // Don't read the API key at import time, will access process.env directly when needed
+
+// Default embedded nomenclature content for fallback when external files don't exist
+const DEFAULT_NOMENCLATURE = `# Wolff Audio Terms
+Wolff (replaces wolf 95% of the time... if the context is talking about the animal, then maybe it is wolf)
+ProPatch
+Wolffhound (Wolff always has two Fs - so wolf is wolff and wolfhound is wolffhound)
+PAW
+MeMore
+Clos (replaces if seen CLO - this is an algorithm for routing)
+mult or mults (replaces molts or molt, never use molts or molt in a file, a mult is when signals are split)
+PRMB
+RIO
+RTB
+DIBB
+Dante
+Monitor ST
+USB-C
+
+
+Generic Terms
+FAQ`;
 
 /**
  * Gets nomenclature prompt to help Whisper with domain-specific terms
  * @returns {string} - Nomenclature prompt text
  */
 export function getNomenclaturePrompt() {
+  let terms = '';
+  
+  // First try to load from external file (same directory as executable)
   try {
-    const terms = fs.readFileSync('./nomenclature.txt', 'utf8').trim();
-    if (!terms) return '';
-    return `The transcript may include these specific terms: ${terms.split(/\r?\n/).join(', ')}`;
+    terms = fs.readFileSync('./nomenclature.txt', 'utf8').trim();
   } catch {
-    return '';
+    // If external file doesn't exist, try embedded source file
+    try {
+      terms = fs.readFileSync(path.join(__dirname, 'nomenclature.txt'), 'utf8').trim();
+    } catch {
+      // If neither exists, use the embedded default content
+      terms = DEFAULT_NOMENCLATURE.trim();
+    }
   }
+  
+  if (!terms) return '';
+  return `The transcript may include these specific terms: ${terms.split(/\r?\n/).join(', ')}`;
 }
 
 /**

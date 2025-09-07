@@ -8,11 +8,44 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Build configuration
-const VERSION = "1.0.0";
+// Read version from package.json (single source of truth)
+const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+const VERSION = packageJson.version;
 const BUILD_DATE = new Date().toISOString().split('T')[0];
+const BUILD_TIME = new Date().toISOString();
 const MINIFY = process.argv.includes('--minify');
 const CREATE_ZIP = process.argv.includes('--zip');
+const INCREMENT_VERSION = process.argv.includes('--increment');
+
+/**
+ * Auto-increment version if requested
+ */
+function incrementVersion(currentVersion, type = 'patch') {
+  const [major, minor, patch] = currentVersion.split('.').map(Number);
+
+  switch (type) {
+    case 'major':
+      return `${major + 1}.0.0`;
+    case 'minor':
+      return `${major}.${minor + 1}.0`;
+    case 'patch':
+    default:
+      return `${major}.${minor}.${patch + 1}`;
+  }
+}
+
+// Handle version increment if requested
+let finalVersion = VERSION;
+if (INCREMENT_VERSION) {
+  const incrementType = process.argv.find(arg => ['--major', '--minor', '--patch'].includes(arg))?.replace('--', '') || 'patch';
+  finalVersion = incrementVersion(VERSION, incrementType);
+
+  // Update package.json with new version
+  packageJson.version = finalVersion;
+  fs.writeFileSync(path.join(__dirname, 'package.json'), JSON.stringify(packageJson, null, 2) + '\n');
+
+  console.log(`📈 Version incremented: ${VERSION} → ${finalVersion} (${incrementType})`);
+}
 
 // Output directory - changed to 'release'
 const OUTPUT_DIR = path.join(__dirname, 'release');
@@ -23,18 +56,20 @@ if (fs.existsSync(OUTPUT_DIR)) {
 }
 fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
-console.log('Building summarai executable for macOS ARM64...');
-console.log(`Version: ${VERSION}`);
-console.log(`Build Date: ${BUILD_DATE}`);
-console.log(`Minification: ${MINIFY ? 'enabled' : 'disabled'}`);
+console.log('🚀 Building summarai executable for macOS ARM64...');
+console.log(`📦 Version: ${finalVersion}`);
+console.log(`📅 Build Date: ${BUILD_DATE}`);
+console.log(`⏰ Build Time: ${BUILD_TIME}`);
+console.log(`🗜️  Minification: ${MINIFY ? 'enabled' : 'disabled'}`);
 
 // Build command
 const buildArgs = [
   'build',
   '--compile',
   '--target=bun-darwin-arm64',
-  `--define=BUILD_VERSION='"${VERSION}"'`,
+  `--define=BUILD_VERSION='"${finalVersion}"'`,
   `--define=BUILD_DATE='"${BUILD_DATE}"'`,
+  `--define=BUILD_TIME='"${BUILD_TIME}"'`,
   './summarai.mjs',
   '--outfile', path.join(OUTPUT_DIR, 'summarai')
 ];
@@ -207,8 +242,9 @@ Contains domain-specific terms and terminology that helps both transcription ser
 - Ensure directories exist and have read/write permissions
 
 ## Version Info
-- Version: ${VERSION}
+- Version: ${finalVersion}
 - Build Date: ${BUILD_DATE}
+- Build Time: ${BUILD_TIME}
 - Platform: macOS ARM64 (Apple Silicon)
 - Runtime: Bun (embedded)
 
@@ -223,11 +259,13 @@ For issues or questions, see the main project repository.
   // Get file size
   const stats = fs.statSync(path.join(OUTPUT_DIR, 'summarai'));
   const sizeMB = (stats.size / (1024 * 1024)).toFixed(2);
-  
+
   console.log('\\n📦 Build Summary:');
-  console.log(`   Output: ${OUTPUT_DIR}/`);
-  console.log(`   Executable size: ${sizeMB} MB`);
-  console.log(`   Files in release directory:`);
+  console.log(`   📁 Output: ${OUTPUT_DIR}/`);
+  console.log(`   📊 Version: ${finalVersion}`);
+  console.log(`   💾 Executable size: ${sizeMB} MB`);
+  console.log(`   📅 Build: ${BUILD_DATE} ${BUILD_TIME.split('T')[1].split('.')[0]}`);
+  console.log(`   📄 Files in release directory:`);
   console.log(`   - summarai (executable)`);
   console.log(`   - config.yaml`);
   console.log(`   - instructions.md (customizable Claude prompts)`);
@@ -237,16 +275,16 @@ For issues or questions, see the main project repository.
   
   // Create zip archive if requested
   if (CREATE_ZIP) {
-    const archiveName = `summarai-macos-arm64-v${VERSION}.zip`;
-    console.log(`\\nCreating distribution archive: ${archiveName}`);
-    
+    const archiveName = `summarai-macos-arm64-v${finalVersion}.zip`;
+    console.log(`\\n📦 Creating distribution archive: ${archiveName}`);
+
     await $`cd release && zip -r ../${archiveName} .`;
-    
+
     const archiveStats = fs.statSync(path.join(__dirname, archiveName));
     const archiveSizeMB = (archiveStats.size / (1024 * 1024)).toFixed(2);
-    
-    console.log(`✓ Created ${archiveName} (${archiveSizeMB} MB)`);
-    console.log(`\\nTo distribute:`);
+
+    console.log(`✅ Created ${archiveName} (${archiveSizeMB} MB)`);
+    console.log(`\\n📤 To distribute:`);
     console.log(`1. Share the ${archiveName} file`);
     console.log(`2. Users unzip and follow README instructions`);
   }

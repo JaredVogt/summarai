@@ -5,11 +5,52 @@ import { fileURLToPath } from 'url';
 import { startSpinner, sanitizeFilename } from './utils.mjs';
 import { retryWithBackoff, defaultShouldRetry } from './retryUtils.mjs';
 import { checkForNewerModels } from './modelChecker.mjs';
+import logger, { LogCategory, LogStatus } from './src/logger.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Don't read the API key at import time, will access process.env directly when needed
+
+// Default embedded content for fallback when external files don't exist
+const DEFAULT_INSTRUCTIONS = `# Instructions for Anthropic Claude
+
+The content being sent is the transcript of a voice memo. Follow the instructions below to process it
+
+- Use the provided nomenclature and terms to interpret technical jargon, product names, or abbreviations accurately.
+- On Line 1 - "Summary: [Create a summary of no more than 6 words and put it here]" (this will be used as a file name)
+- On Line 2 - "Keywords: [list of keywords extracted from the transcript and put them here, separated by commas]" use your best judgement
+- Provide a detailed bullet-point summary of the main ideas and technical content.
+- If "keyword" is said, then the word following that should be added to keywords
+- If "directory" is said, then the word after that should be added to Keywords use your best judgment because it could just be used in a sentence
+- if "task" is said, the content following is probably a task - use your best judgement.  
+- Identify and list any clear action items, decisions, or follow-up tasks mentioned in the transcript.
+- If you are unsure about a term, use your best judgment based on the nomenclature and context.
+- Do not include generic phrases like "Voice Memo Summary" in the summary.
+- Format your output in markdown, with clear section headers for Summary, In-depth Summarization, and Action Items.
+- Special note: Do not assume that the transcript is only about one related topic. There are times where multiple very unrelated things are discussed. In this case, separate them into different summaries.
+
+You may edit or expand these instructions as needed to improve the quality and relevance of the summaries.`;
+
+const DEFAULT_NOMENCLATURE = `# Wolff Audio Terms
+Wolff (replaces wolf 95% of the time... if the context is talking about the animal, then maybe it is wolf)
+ProPatch
+Wolffhound (Wolff always has two Fs - so wolf is wolff and wolfhound is wolffhound)
+PAW
+MeMore
+Clos (replaces if seen CLO - this is an algorithm for routing)
+mult or mults (replaces molts or molt, never use molts or molt in a file, a mult is when signals are split)
+PRMB
+RIO
+RTB
+DIBB
+Dante
+Monitor ST
+USB-C
+
+
+Generic Terms
+FAQ`;
 
 /**
  * Checks if a summary appears to be generic
@@ -29,13 +70,23 @@ function isGenericSummary(summary) {
  * @returns {string} - Nomenclature prompt text
  */
 export function getNomenclatureNote() {
+  let terms = '';
+  
+  // First try to load from external file (same directory as executable)
   try {
-    const terms = fs.readFileSync('./nomenclature.txt', 'utf8').trim();
-    if (!terms) return '';
-    return `\n\n---\nThe following is a list of terms, product names, or jargon that may appear in the transcript. Please use this list to help interpret, spell, or summarize the content accurately.\n\n${terms}\n---\n`;
+    terms = fs.readFileSync('./nomenclature.txt', 'utf8').trim();
   } catch {
-    return '';
+    // If external file doesn't exist, use embedded default
+    try {
+      terms = fs.readFileSync(path.join(__dirname, 'nomenclature.txt'), 'utf8').trim();
+    } catch {
+      // If neither exists, use the embedded default content
+      terms = DEFAULT_NOMENCLATURE.trim();
+    }
   }
+  
+  if (!terms) return '';
+  return `\n\n---\nThe following is a list of terms, product names, or jargon that may appear in the transcript. Please use this list to help interpret, spell, or summarize the content accurately.\n\n${terms}\n---\n`;
 }
 
 /**
@@ -44,13 +95,22 @@ export function getNomenclatureNote() {
  */
 export function getInstructionsNote() {
   let instructions = '';
+  
+  // First try to load from external file (same directory as executable)
   try {
-    instructions = fs.readFileSync(path.join(__dirname, 'instructions.md'), 'utf8').trim();
-    if (instructions) {
-      instructions = 'The following are additional instructions to guide your response:\n' + instructions + '\n';
+    instructions = fs.readFileSync('./instructions.md', 'utf8').trim();
+  } catch {
+    // If external file doesn't exist, try embedded source file
+    try {
+      instructions = fs.readFileSync(path.join(__dirname, 'instructions.md'), 'utf8').trim();
+    } catch {
+      // If neither exists, use the embedded default content
+      instructions = DEFAULT_INSTRUCTIONS.trim();
     }
-  } catch (e) {
-    // If instructions.md does not exist, skip
+  }
+  
+  if (instructions) {
+    instructions = 'The following are additional instructions to guide your response:\n' + instructions + '\n';
   }
   return instructions;
 }
@@ -70,36 +130,6 @@ function extractKeywords(claudeText) {
   return [];
 }
 
-/**
- * Gets output keywords from keywords.txt
- * @returns {Array<string>} - Array of keywords
- */
-function getOutputKeywords() {
-  try {
-    return fs.readFileSync(path.join(__dirname, 'keywords.txt'), 'utf8')
-      .split(/\r?\n/)
-      .map(k => k.trim().toLowerCase())
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Determines the target directory based on keywords
- * @param {Array<string>} keywordsInSummary - Keywords extracted from summary
- * @param {string} outputDir - Base output directory
- * @returns {string} - Target directory path
- */
-function getSingleTargetDir(keywordsInSummary, outputDir) {
-  const outputKeywords = getOutputKeywords(); // already lowercased
-  const summaryKeywordsLower = keywordsInSummary.map(k => k.toLowerCase());
-  const matchedKeyword = outputKeywords.find(k => summaryKeywordsLower.includes(k));
-  if (matchedKeyword) {
-    return path.join(outputDir, matchedKeyword);
-  }
-  return outputDir;
-}
 
 /**
  * Determines the content type (voice memo, video, audio) based on file extension
@@ -130,7 +160,7 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
   
   if (!ANTHROPIC_API_KEY) {
-    console.error('ANTHROPIC_API_KEY not set.');
+    logger.failure(LogCategory.API, 'ANTHROPIC_API_KEY not set');
     return;
   }
   const nomenclatureNote = getNomenclatureNote();
@@ -156,7 +186,7 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
       shouldRetry: (error) => {
         // Check for rate limit errors
         if (error.response && error.response.status === 429) {
-          console.log('[ClaudeAPI] Rate limit hit, will retry');
+          logger.warn(LogCategory.API, 'Claude API rate limit hit, will retry');
           return true;
         }
         // Use default retry logic for other errors
@@ -168,7 +198,7 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
     const currentModel = 'claude-opus-4-20250514';
     checkForNewerModels(currentModel).catch(err => {
       // Don't let model checking errors interrupt the main flow
-      console.error('[ModelChecker] Error checking for newer models:', err.message);
+      logger.warn(LogCategory.MODEL, `Error checking for newer models: ${err.message}`);
     });
 
     // Call Claude API with retry logic
@@ -208,7 +238,7 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
       claudeText = textBlock.text;
     } else {
       // Log if the expected content structure is not found
-      console.warn('[ClaudeAPI] Claude response did not contain a text block in the content array. Response data:', response.data);
+      logger.warn(LogCategory.API, 'Claude response did not contain a text block in the content array', null, response.data);
       claudeText = ''; // Default to empty string if no valid content
     }
 
@@ -218,27 +248,26 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
 
   } catch (err) {
     spinnerStop();
-    console.error('[ClaudeAPI] Error calling Claude API:');
+    logger.apiError('Claude', 'API call', err);
     if (err.response) {
       // Axios error with a response from the server
-      console.error('Status:', err.response.status);
-      console.error('Headers:', JSON.stringify(err.response.headers, null, 2));
-      console.error('Data:', JSON.stringify(err.response.data, null, 2));
+      logger.error(LogCategory.API, `Status: ${err.response.status}`);
+      logger.debug(LogCategory.API, 'Response headers', null, JSON.stringify(err.response.headers, null, 2));
+      logger.debug(LogCategory.API, 'Response data', null, JSON.stringify(err.response.data, null, 2));
     } else if (err.request) {
       // Axios error where the request was made but no response was received
-      console.error('Request Error: No response received. Request details:', err.request);
+      logger.error(LogCategory.API, 'No response received from Claude API');
     } else {
       // Other errors (e.g., setup issues)
-      console.error('Error Message:', err.message);
+      logger.error(LogCategory.API, `Setup error: ${err.message}`);
     }
-    console.error('Full error object:', err);
     return; // Exit if there's an error
   }
 
   // If claudeText is still '[No content returned]' or empty, log the prompt for review
   if (claudeText === '[No content returned]' || !claudeText.trim()) {
-    console.warn('[ClaudeAPI] Claude returned no substantive content. Review the prompt:');
-    console.warn(prompt.substring(0, 1000) + (prompt.length > 1000 ? '...' : '')); // Log first 1000 chars of prompt
+    logger.warn(LogCategory.API, 'Claude returned no substantive content');
+    logger.debug(LogCategory.API, 'Prompt for review', null, prompt.substring(0, 1000) + (prompt.length > 1000 ? '...' : ''));
   }
 
   // Extract the summary after 'Summary:' (with or without brackets)
@@ -263,7 +292,7 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
     const originalDateMatch = originalFileName.match(/^(\d{6}_\d{4})(?:\.|$)/);
     if (originalDateMatch) {
       prefixToUse = originalDateMatch[1];
-      console.log(`Using original date prefix from filename: ${prefixToUse}`);
+      logger.debug(LogCategory.PROCESSING, `Using original date prefix from filename: ${prefixToUse}`);
     }
   }
 
@@ -292,7 +321,7 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
         }
       });
     } catch (error) {
-      console.warn('Error with regex pattern for versioning, using default version', error.message);
+      logger.warn(LogCategory.PROCESSING, `Error with regex pattern for versioning: ${error.message}, using default version`);
       maxVersion = 1; // Fallback to version 1 if regex fails
     }
     versionSuffix = `_v${maxVersion + 1}`;
@@ -305,7 +334,7 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
   }
 
   const keywordsInSummary = extractKeywords(claudeText);
-  const targetDir = getSingleTargetDir(keywordsInSummary, outputDir);
+  const targetDir = outputDir;
   if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
   const mdFile = path.join(targetDir, `${finalName}.md`);
   const homeDir = process.env.HOME || process.env.USERPROFILE;
@@ -325,10 +354,10 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
   
   try {
     fs.copyFileSync(filePath, destPath);
-    console.log(`Claude output written to: ${mdFile}`);
-    console.log(`Original ${getContentTypeFromPath(filePath)} file copied to: ${destPath}`);
+    logger.success(LogCategory.PROCESSING, `Claude output written to: ${mdFile}`);
+    logger.success(LogCategory.FILE, `Original ${getContentTypeFromPath(filePath)} file copied to: ${destPath}`);
   } catch (error) {
-    console.error(`Error copying original file: ${error.message}`);
+    logger.failure(LogCategory.FILE, `Error copying original file: ${error.message}`);
   }
   return { finalName, targetDir, mdFilePath: mdFile };
 }

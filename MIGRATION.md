@@ -1,9 +1,17 @@
-# Migration Guide - Configuration System Update
+# Migration Guide - Configuration & Security Updates
 
-This guide helps you migrate from the previous environment variable-based configuration to the new centralized YAML configuration system.
+This guide helps you migrate from previous versions to the latest version with enhanced security and configuration features.
 
 ## 🚨 Important Changes
 
+### Version 2.1 - Security & Reliability Overhaul
+**Version 2.1** introduces major security improvements and enhanced reliability features:
+- **Enhanced Input Validation**: All user inputs are now validated and sanitized
+- **Secure Command Execution**: External commands use secure parameter passing
+- **Comprehensive Testing**: Full test suite with security and functionality coverage
+- **Error Handling**: Robust error handling framework with detailed logging
+
+### Version 2.0 - Configuration System Overhaul
 **Version 2.0** introduces a major configuration overhaul that **centralizes all settings** in a single `config.yaml` file instead of scattered environment variables and hardcoded values.
 
 ### What Changed
@@ -250,21 +258,59 @@ If you need to rollback to environment variables:
 
 3. **Restart** your processes - they'll detect the missing config and use environment variables
 
+## 🔒 Security Updates (v2.1)
+
+### No Action Required
+The security improvements in v2.1 are **automatically applied** and require no configuration changes:
+
+- **Input Validation**: All user inputs are automatically validated
+- **Secure Commands**: External command execution is automatically secured
+- **Error Handling**: Enhanced error handling is enabled by default
+- **API Key Validation**: API keys are validated on startup
+
+### Testing Your Setup
+Verify everything is working correctly:
+
+```bash
+# Run the test suite
+bun test
+
+# Test Bun compatibility
+bun scripts/test-bun-compatibility.mjs
+
+# Validate critical fixes
+bun test-critical-fixes.mjs
+
+# Test application startup
+bun summarai.mjs --help
+```
+
+### Security Benefits
+After the v2.1 update, you'll have:
+- 🔒 **Command Injection Protection**: All external commands are secure
+- 🛡️ **Path Traversal Protection**: File paths are validated and sanitized
+- ✅ **Input Validation**: All user inputs are checked for safety
+- 📝 **Enhanced Logging**: Better error messages and debugging information
+- 🧪 **Test Coverage**: Comprehensive test suite for reliability
+
 ## 🎉 You're Done!
 
 After migration, you'll have:
-- ✅ Centralized configuration in `config.yaml`  
+- ✅ Centralized configuration in `config.yaml`
 - ✅ All the new customization options available
 - ✅ Environment variable override capability
 - ✅ Better error messages and validation
 - ✅ Easier maintenance and deployment
+- 🔒 **Enhanced security and reliability**
 
-The migration preserves all your existing functionality while unlocking powerful new customization capabilities!
+The migration preserves all your existing functionality while unlocking powerful new customization capabilities and security features!
 
 ## 📚 Next Steps
 
 1. **Explore new features** in the updated README.md
-2. **Customize audio processing** settings for your workflow
-3. **Set up additional file extensions** if needed
-4. **Configure watch behavior** for your use case
-5. **Consider using environment overrides** for different deployment environments
+2. **Run the test suite** to verify everything is working
+3. **Customize audio processing** settings for your workflow
+4. **Set up additional file extensions** if needed
+5. **Configure watch behavior** for your use case
+6. **Consider using environment overrides** for different deployment environments
+7. **Review security features** and test with your specific use cases

@@ -4,6 +4,7 @@ import { startSpinner } from './utils.mjs';
 import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
 import { retryWithBackoff, defaultShouldRetry } from './retryUtils.mjs';
 import { loadConfig, getConfigValue } from './configLoader.mjs';
+import logger, { LogCategory, LogStatus } from './src/logger.mjs';
 
 // Don't read the API key at import time, will access process.env directly when needed
 
@@ -64,7 +65,7 @@ export async function transcribeWithScribe(audioFilePath, options = {}) {
     throw new Error(`File size exceeds ${maxSizeMB}MB limit (${fileSizeMB.toFixed(2)}MB)`);
   }
 
-  console.log(`Processing file (${fileSizeMB.toFixed(2)} MB) with ElevenLabs Scribe...`);
+  logger.processing(LogCategory.API, `Processing file (${fileSizeMB.toFixed(2)} MB) with ElevenLabs Scribe`);
 
   // Initialize the client
   const elevenlabs = new ElevenLabsClient({
@@ -123,7 +124,7 @@ export async function transcribeWithScribe(audioFilePath, options = {}) {
         // and not an extracted audio stream. For now, we'll assume it's an audio file as per the example's pattern.
         // If it's a video file, the user should extract audio first before sending to Scribe.
         // Let's assume audioFilePath is always an audio file for Scribe.
-        console.warn(`Warning: Passing a video file (${ext}) directly. Scribe expects audio. Ensure this file is an audio track or audio can be extracted.`);
+        logger.warn(LogCategory.API, `Passing a video file (${ext}) directly. Scribe expects audio. Ensure this file is an audio track or audio can be extracted.`);
         // For now, we'll use a common audio type for video extensions if passed directly, though this is not ideal.
         // It's better to ensure audioFilePath is an audio file.
         mimeType = 'audio/mp4'; // A common audio codec in video files.
@@ -142,18 +143,18 @@ export async function transcribeWithScribe(audioFilePath, options = {}) {
       }
     }
     
-    console.log(`Processing ${fileType} file: ${path.basename(audioFilePath)} (MIME Type: ${mimeType})`);
-    
+    logger.debug(LogCategory.API, `Processing ${fileType} file: ${path.basename(audioFilePath)} (MIME Type: ${mimeType})`);
+
     // Read the file into a buffer
     const fileBuffer = fs.readFileSync(audioFilePath);
-    
+
     // Create a Blob from the buffer, similar to the working example
     let audioBlob = new Blob([fileBuffer], { type: mimeType });
 
     // Log options before calling API
-    console.log(`[ScribeAPI] Calling ElevenLabs speechToText.convert with:`);
-    console.log(`[ScribeAPI] Blob type: ${audioBlob.type}, size: ${audioBlob.size}`);
-    console.log(`[ScribeAPI] Options:`, JSON.stringify(callSpecificOptions, null, 2));
+    logger.apiCall('ElevenLabs Scribe', 'speechToText.convert');
+    logger.debug(LogCategory.API, `Blob type: ${audioBlob.type}, size: ${audioBlob.size}`);
+    logger.debug(LogCategory.API, 'Options', null, JSON.stringify(callSpecificOptions, null, 2));
 
     // Define retry options for ElevenLabs
     const retryOptions = {
@@ -169,7 +170,7 @@ export async function transcribeWithScribe(audioFilePath, options = {}) {
       },
       onRetry: async (attempt, error) => {
         // Create fresh Blob on retry to avoid stream reuse issues
-        console.log(`[ScribeAPI] Creating fresh Blob for retry attempt ${attempt}`);
+        logger.debug(LogCategory.API, `Creating fresh Blob for retry attempt ${attempt}`);
         const freshFileBuffer = fs.readFileSync(audioFilePath);
         audioBlob = new Blob([freshFileBuffer], { type: mimeType });
       }
@@ -195,9 +196,9 @@ export async function transcribeWithScribe(audioFilePath, options = {}) {
   } catch (err) {
     stopSpinner();
     // More detailed error logging
-    console.error('Error during Scribe transcription:', err);
+    logger.apiError('ElevenLabs Scribe', 'transcription', err);
     if (err.message && err.message.includes('invalid_json_response_body')) {
-      console.error('This might indicate an issue with the API key, file format, or API service availability.');
+      logger.error(LogCategory.API, 'This might indicate an issue with the API key, file format, or API service availability');
     }
     throw new Error(`Transcription error with ElevenLabs Scribe: ${err.message}`);
   }

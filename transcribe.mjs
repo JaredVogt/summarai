@@ -17,6 +17,19 @@ import { transcribeWithScribe, createSegmentsContent } from './scribeAPI.mjs';
 import { convertToTempAAC, cleanupTempDir, splitAudioFile } from './audioProcessing.mjs';
 import { startSpinner, sanitizeFilename } from './utils.mjs';
 import { loadConfig, getConfigValue } from './configLoader.mjs';
+import {
+  ProcessingError,
+  FileSystemError,
+  handleError,
+  withErrorHandling
+} from './src/errors.mjs';
+import {
+  validateFilePath,
+  validateAudioOptions,
+  validateTranscriptionOptions,
+  validateFileSize
+} from './src/validation.mjs';
+import logger, { LogCategory, LogStatus } from './src/logger.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,7 +39,7 @@ let config;
 try {
   config = loadConfig();
 } catch (error) {
-  console.warn('Warning: Could not load config, using fallback values:', error.message);
+  logger.warn(LogCategory.CONFIG, `Could not load config, using fallback values: ${error.message}`);
   config = { directories: { output: './output' } };
 }
 
@@ -91,13 +104,13 @@ async function transcribeLatestVoiceMemo(transcriptionService) {
   try {
     files = await getLatestVoiceMemos(count);
   } catch (err) {
-    console.error('Error finding voice memos:', err.message);
+    logger.failure(LogCategory.PROCESSING, `Error finding voice memos: ${err.message}`);
     rl.close();
     return;
   }
   // Get processed filenames
   const processed = getProcessedFilenames();
-  console.log('\nRecent Voice Memos:');
+  logger.info(LogCategory.PROCESSING, 'Recent Voice Memos:');
   for (let i = 0; i < files.length; i++) {
     const { file, duration, date, gps } = files[i];
     let info = [];
@@ -130,9 +143,9 @@ async function transcribeLatestVoiceMemo(transcriptionService) {
         const originalFileName = path.basename(file.file);
         const isProcessed = processed.has(originalFileName);
         if (isProcessed) {
-          console.log(`Re-processing: ${file.file}`);
+          logger.info(LogCategory.PROCESSING, `Re-processing: ${file.file}`);
         } else {
-          console.log(`Processing: ${file.file}`);
+          logger.info(LogCategory.PROCESSING, `Processing: ${file.file}`);
         }
         await processVoiceMemo(file.fullPath, { transcriptionService });
       }
@@ -150,52 +163,81 @@ async function transcribeLatestVoiceMemo(transcriptionService) {
 }
 
 // Exportable main workflow for automation
-export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQuality = false, transcriptionService = 'scribe', silentMode = false, model = null, maxSpeakers = null, fromGoogleDrive = false, outputPath = null } = {}) {
-  const originalFileName = path.basename(filePath);
-  let recordingDateTime = null;
-  let recordingDateTimePrefix = null;
-  
-  // Try to extract date/time from filename pattern (common for voice memos)
-  const dtMatch = originalFileName.match(/(\d{8})[ _-](\d{6})/);
-  if (dtMatch) {
-    const [_, ymd, hms] = dtMatch;
-    recordingDateTimePrefix = `${ymd}_${hms}`;
-    const year = ymd.slice(0, 4);
-    const month = ymd.slice(4, 6);
-    const day = ymd.slice(6, 8);
-    const hour = hms.slice(0, 2);
-    const min = hms.slice(2, 4);
-    const sec = hms.slice(4, 6);
-    recordingDateTime = `${year}-${month}-${day}T${hour}:${min}:${sec}-07:00`;
-  } else {
-    // For files without timestamp in name, get the current time
-    console.log('No datetime pattern found in filename, using current time');
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const hour = String(now.getHours()).padStart(2, '0');
-    const min = String(now.getMinutes()).padStart(2, '0');
-    const sec = String(now.getSeconds()).padStart(2, '0');
-    
-    // Format for display and filename
-    recordingDateTimePrefix = `${year}${month}${day}_${hour}${min}${sec}`;
-    recordingDateTime = now.toISOString();
-  }
-  // Always convert to temp AAC
-  const tempDir = path.join(path.dirname(filePath), 'temp');
-  const tempAACPath = await convertToTempAAC(filePath, tempDir, {
-    forceAudioExtraction: forceVideoMode,
-    lowQuality: lowQuality
-  });
-  let usedTemp = true;
-  console.log('Processing file:', originalFileName);
+export async function processVoiceMemo(filePath, options = {}) {
+  const {
+    forceVideoMode = false,
+    lowQuality = false,
+    transcriptionService = 'scribe',
+    silentMode = false,
+    model = null,
+    maxSpeakers = null,
+    fromGoogleDrive = false,
+    outputPath = null,
+    createSegmentsFile = null  // Allow override, but default to config value
+  } = options;
+
+  // Get the global setting from config, with fallback to true for backward compatibility
+  const globalCreateSegmentsFile = getConfigValue(config, 'fileProcessing.output.createSegmentsFile', true);
+  const shouldCreateSegmentsFile = createSegmentsFile !== null ? createSegmentsFile : globalCreateSegmentsFile;
+
   try {
+    // Validate inputs
+    const validatedPath = validateFilePath(filePath, true);
+    const validatedAudioOptions = validateAudioOptions({ lowQuality });
+    const validatedTranscriptionOptions = validateTranscriptionOptions({
+      transcriptionService,
+      model,
+      maxSpeakers
+    });
+
+    // Validate file size
+    validateFileSize(validatedPath, 1024); // 1GB limit
+
+    const originalFileName = path.basename(validatedPath);
+    let recordingDateTime = null;
+    let recordingDateTimePrefix = null;
+
+    // Try to extract date/time from filename pattern (common for voice memos)
+    const dtMatch = originalFileName.match(/(\d{8})[ _-](\d{6})/);
+    if (dtMatch) {
+      const [_, ymd, hms] = dtMatch;
+      recordingDateTimePrefix = `${ymd}_${hms}`;
+      const year = ymd.slice(0, 4);
+      const month = ymd.slice(4, 6);
+      const day = ymd.slice(6, 8);
+      const hour = hms.slice(0, 2);
+      const min = hms.slice(2, 4);
+      const sec = hms.slice(4, 6);
+      recordingDateTime = `${year}-${month}-${day}T${hour}:${min}:${sec}-07:00`;
+    } else {
+      // For files without timestamp in name, get the current time
+      console.log('No datetime pattern found in filename, using current time');
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      const hour = String(now.getHours()).padStart(2, '0');
+      const min = String(now.getMinutes()).padStart(2, '0');
+      const sec = String(now.getSeconds()).padStart(2, '0');
+
+      // Format for display and filename
+      recordingDateTimePrefix = `${year}${month}${day}_${hour}${min}${sec}`;
+      recordingDateTime = now.toISOString();
+    }
+
+    // Always convert to temp AAC
+    const tempDir = path.join(path.dirname(filePath), 'temp');
+    const tempAACPath = await convertToTempAAC(filePath, tempDir, {
+      forceAudioExtraction: forceVideoMode,
+      lowQuality: lowQuality
+    });
+    let usedTemp = true;
+    logger.processing(LogCategory.PROCESSING, `Processing file: ${originalFileName}`);
     // Get file size for logging
     const stats = fs.statSync(tempAACPath);
     const fileSizeMB = stats.size / (1024 * 1024);
-    
-    console.log(`Using transcription service: ${transcriptionService === 'whisper' ? 'OpenAI Whisper' : 'ElevenLabs Scribe'}`);
+
+    logger.info(LogCategory.PROCESSING, `Using transcription service: ${transcriptionService === 'whisper' ? 'OpenAI Whisper' : 'ElevenLabs Scribe'}`);
     
     let transcriptionData;
     let transcript;
@@ -234,7 +276,7 @@ export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQu
       }
     } else {
       // ElevenLabs Scribe can handle files up to 1GB
-      console.log(`Audio file size (${fileSizeMB.toFixed(2)} MB) - ElevenLabs Scribe can handle up to 1GB`);
+      logger.info(LogCategory.PROCESSING, `Audio file size (${fileSizeMB.toFixed(2)} MB) - ElevenLabs Scribe can handle up to 1GB`);
       
       // Get default values from config
       const defaultModel = getConfigValue(config, 'transcription.scribe.model', 'scribe_v1');
@@ -286,10 +328,10 @@ export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQu
         rl.close();
       } else if (!silentMode) {
         const speakersDisplay = selectedMaxSpeakers ? `max ${selectedMaxSpeakers}` : 'auto';
-        console.log(`Using specified settings: ${selectedModel}, ${speakersDisplay} speakers`);
+        logger.info(LogCategory.PROCESSING, `Using specified settings: ${selectedModel}, ${speakersDisplay} speakers`);
       } else {
         const speakersDisplay = selectedMaxSpeakers ? `max ${selectedMaxSpeakers}` : 'auto';
-        console.log(`Silent mode: Using ${selectedModel} with ${speakersDisplay} speaker detection`);
+        logger.info(LogCategory.PROCESSING, `Silent mode: Using ${selectedModel} with ${speakersDisplay} speaker detection`);
       }
       
       // Get diarize setting from config
@@ -312,18 +354,20 @@ export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQu
     }
     
     // Don't print the full transcript to console to reduce output verbosity
-    console.log('Transcription processed successfully.');
+    logger.success(LogCategory.PROCESSING, 'Transcription processed successfully');
     // Just show transcript length as indicator
-    console.log(`Transcript length: ${transcript.length} characters, ${transcript.split(/\s+/).length} words`);
+    logger.info(LogCategory.PROCESSING, `Transcript length: ${transcript.length} characters, ${transcript.split(/\s+/).length} words`);
   
     // Send to Claude and write output (markdown + audio)
     // Pass the original .m4a path, not the temp AAC
     const { finalName, targetDir, mdFilePath } = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, outputPath || OUTPUT_DIR, originalFileName);
     
-    // Write segments to a file
-    const segmentsFile = path.join(targetDir, `${finalName}_segments.txt`);
-    fs.writeFileSync(segmentsFile, segmentsContent);
-    console.log(`Segments with timestamps written to: ${segmentsFile}`);
+    // Write segments to a file (only if enabled by config or override)
+    if (shouldCreateSegmentsFile) {
+      const segmentsFile = path.join(targetDir, `${finalName}_segments.txt`);
+      fs.writeFileSync(segmentsFile, segmentsContent);
+      console.log(`Segments with timestamps written to: ${segmentsFile}`);
+    }
     
     // Append segments to the markdown file
     if (mdFilePath && fs.existsSync(mdFilePath)) {
@@ -350,10 +394,26 @@ export async function processVoiceMemo(filePath, { forceVideoMode = false, lowQu
       return { finalName, targetDir, transcript, segmentsContent };
     }
   } catch (error) {
-    console.error(error.message);
     // Always clean up on error
     if (usedTemp) cleanupTempDir(tempDir);
-    throw error; // Re-throw to let caller handle
+
+    // Handle different types of errors appropriately
+    const context = `processVoiceMemo(${originalFileName})`;
+
+    if (error.code === 'ENOENT') {
+      throw new FileSystemError('File not found', 'read', filePath, { originalError: error });
+    } else if (error.code === 'EACCES') {
+      throw new FileSystemError('Permission denied', 'access', filePath, { originalError: error });
+    } else if (error.name === 'ValidationError') {
+      // Re-throw validation errors as-is
+      throw error;
+    } else {
+      // Wrap other errors as processing errors
+      throw new ProcessingError(
+        `Failed to process voice memo: ${error.message}`,
+        { filePath, originalError: error.message, context }
+      );
+    }
   }
 }
 
@@ -386,7 +446,7 @@ function parseCommandLineArgs() {
   // First check for silent mode before processing other flags
   if (args.includes('--silent')) {
     result.silentMode = true;
-    console.log('Silent mode enabled: auto-processing newest unprocessed voice memo');
+    logger.info(LogCategory.PROCESSING, 'Silent mode enabled: auto-processing newest unprocessed voice memo');
   }
 
   // Process each argument
@@ -397,16 +457,16 @@ function parseCommandLineArgs() {
       result.displayHelp = true;
     } else if (arg === '--video' || arg === '-v') {
       result.forceVideoMode = true;
-      if (!result.silentMode) console.log('Video mode enabled: will force audio extraction');
+      if (!result.silentMode) logger.info(LogCategory.PROCESSING, 'Video mode enabled: will force audio extraction');
     } else if (arg === '--low-quality' || arg === '-l') {
       result.lowQuality = true;
-      if (!result.silentMode) console.log('Low quality mode enabled: will use more aggressive compression');
+      if (!result.silentMode) logger.info(LogCategory.PROCESSING, 'Low quality mode enabled: will use more aggressive compression');
     } else if (arg === '--scribe' || arg === '-s') {
       result.transcriptionService = 'scribe';
-      if (!result.silentMode) console.log('Using ElevenLabs Scribe for transcription');
+      if (!result.silentMode) logger.info(LogCategory.PROCESSING, 'Using ElevenLabs Scribe for transcription');
     } else if (arg === '--whisper' || arg === '-w') {
       result.transcriptionService = 'whisper';
-      if (!result.silentMode) console.log('Using OpenAI Whisper for transcription');
+      if (!result.silentMode) logger.info(LogCategory.PROCESSING, 'Using OpenAI Whisper for transcription');
     } else if (arg === '--silent') {
       // Already handled above
     } else if (!arg.startsWith('-') && !result.filePath) {
@@ -426,7 +486,7 @@ function parseCommandLineArgs() {
 
   // Verify file exists if a filePath is provided
   if (result.filePath && !fs.existsSync(result.filePath)) {
-    console.error(`Error: File not found: ${result.filePath}`);
+    logger.failure(LogCategory.PROCESSING, `File not found: ${result.filePath}`);
     process.exit(1);
   }
 
@@ -474,7 +534,7 @@ async function getLatestUnprocessedVoiceMemo() {
     for (const file of files) {
       const originalFileName = path.basename(file.file);
       if (!processed.has(originalFileName)) {
-        console.log(`Found unprocessed voice memo: ${file.file}`);
+        logger.info(LogCategory.PROCESSING, `Found unprocessed voice memo: ${file.file}`);
         return file.fullPath;
       }
     }
@@ -494,7 +554,7 @@ async function getLatestUnprocessedVoiceMemo() {
  */
 async function processInSilentMode(filePath) {
   if (!filePath) {
-    console.error('No unprocessed voice memo found.');
+    logger.failure(LogCategory.PROCESSING, 'No unprocessed voice memo found');
     return;
   }
   
@@ -508,37 +568,41 @@ async function processInSilentMode(filePath) {
     maxSpeakers: null      // Auto voice detection as specified in requirements
   };
   
-  console.log(`Silent mode: Processing file ${filePath} with model 1 and auto voice detection`);
+  logger.info(LogCategory.PROCESSING, `Silent mode: Processing file ${filePath} with model 1 and auto voice detection`);
   try {
     await processVoiceMemo(filePath, options);
-    console.log('Silent mode processing completed successfully.');
+    logger.success(LogCategory.PROCESSING, 'Silent mode processing completed successfully');
   } catch (error) {
-    console.error('Error during silent mode processing:', error.message);
+    logger.failure(LogCategory.PROCESSING, `Error during silent mode processing: ${error.message}`);
   }
 }
 
 // Run if called directly (but not when imported by watchDirectories or running in executable)
-if (import.meta.url === `file://${process.argv[1]}` && !process.argv[1]?.includes('watchDirectories')) {
+// Also check that we're not running as part of summarai.mjs
+if (import.meta.url === `file://${process.argv[1]}` &&
+    !process.argv[1]?.includes('watchDirectories') &&
+    !process.argv[1]?.includes('summarai') &&
+    !process.argv[1]?.includes('release/summarai')) {
   const parsedArgs = parseCommandLineArgs(); // This will exit if --help is passed
   
   // The order of checks is important - silent mode takes highest precedence
   if (parsedArgs.silentMode === true) {
-    console.log('Running in silent mode - will auto-process the newest unprocessed voice memo');
+    logger.info(LogCategory.PROCESSING, 'Running in silent mode - will auto-process the newest unprocessed voice memo');
     // Silent mode - auto process the newest unprocessed voice memo
     getLatestUnprocessedVoiceMemo()
       .then(filePath => {
         if (filePath) {
           return processInSilentMode(filePath);
         } else {
-          console.log('No unprocessed voice memos found.');
+          logger.info(LogCategory.PROCESSING, 'No unprocessed voice memos found');
         }
       })
       .catch(err => {
-        console.error('Error in silent mode:', err.message);
+        logger.failure(LogCategory.PROCESSING, `Error in silent mode: ${err.message}`);
       });
   } else if (parsedArgs.filePath) {
     // Direct file processing mode
-    console.log(`Processing file: ${parsedArgs.filePath}`);
+    logger.info(LogCategory.PROCESSING, `Processing file: ${parsedArgs.filePath}`);
     processVoiceMemo(parsedArgs.filePath, {
       forceVideoMode: parsedArgs.forceVideoMode,
       lowQuality: parsedArgs.lowQuality,

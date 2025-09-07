@@ -20,11 +20,19 @@ A comprehensive system for automatically processing voice memos and audio/video 
 
 ### Automation & Reliability
 - **Automatic File Watching**: Monitors Voice Memos and Google Drive directories for new files
-- **Retry Logic**: Exponential backoff for API reliability and error recovery  
+- **Retry Logic**: Exponential backoff for API reliability and error recovery
 - **Silent Mode**: Fully automated processing without user interaction
 - **Date Range Processing**: Flexible processing of Voice Memos from specific date ranges
 - **Lock File System**: Prevents concurrent processing of the same file
 - **Process History**: Tracks processed files to avoid duplicates
+
+### Security & Validation
+- **Input Validation**: Comprehensive validation of all user inputs and file paths
+- **Path Traversal Protection**: Prevents directory traversal and unauthorized file access
+- **Secure Command Execution**: All external commands use secure parameter passing (no shell injection)
+- **API Key Validation**: Automatic validation of required API keys on startup
+- **File Size Limits**: Configurable limits to prevent resource exhaustion
+- **Filename Sanitization**: Automatic cleaning of unsafe characters in filenames
 
 ### Advanced Features
 - **Model Version Checking**: Automatically checks for newer Claude models with 24-hour caching
@@ -32,6 +40,9 @@ A comprehensive system for automatically processing voice memos and audio/video 
 - **Large File Chunking**: Automatic splitting of large audio files for processing
 - **Configuration System**: Centralized YAML configuration with environment variable overrides
 - **Speed Optimization**: Configurable audio speed adjustment (default 1.5x) for faster processing
+- **Error Handling**: Comprehensive error handling with detailed logging and recovery mechanisms
+- **Bun Runtime Support**: Full compatibility with Bun runtime including VFS-aware caching
+- **Test Suite**: Comprehensive test coverage for validation, security, and functionality
 
 ## 📁 File Types Generated
 
@@ -344,12 +355,51 @@ DEST_DIR="/path/to/your/input_files"                # Local destination
 LOG_FILE="/path/to/your/.move_log"                  # Copy log file
 ```
 
+## 🧪 Testing & Development
+
+### Running Tests
+```bash
+# Run all tests
+bun test
+
+# Run specific test suites
+bun test tests/validation.test.mjs
+bun test tests/basic-functionality.test.mjs
+
+# Test Bun compatibility
+bun scripts/test-bun-compatibility.mjs
+
+# Validate critical fixes
+bun test-critical-fixes.mjs
+```
+
+### Test Coverage
+- **Validation Tests**: Input validation, security, and sanitization
+- **Functionality Tests**: Core features, error handling, file operations
+- **Security Tests**: Path traversal protection, command injection prevention
+- **Integration Tests**: End-to-end workflows and error scenarios
+
+## 🔒 Security Features
+
+The system includes comprehensive security measures:
+
+- **Input Validation**: All user inputs are validated and sanitized
+- **Path Security**: Protection against directory traversal attacks
+- **Command Security**: All external commands use secure parameter passing
+- **API Security**: Proper API key validation and handling
+- **File Security**: Safe filename handling and size limits
+
 ## 📝 Recent Updates
 
+- **v2.1**: Major security overhaul with comprehensive input validation and secure command execution
 - **v2.0**: Complete configuration system overhaul with centralized YAML config
+- **Enhanced Security**: Added path traversal protection and command injection prevention
+- **Test Suite**: Comprehensive test coverage with 46+ passing tests
+- **Error Handling**: Robust error handling framework with detailed logging
+- **Bun Compatibility**: Full support for Bun runtime including VFS workarounds
 - **Flexible Date Ranges**: Process Voice Memos from specific date ranges
 - **Enhanced File Watching**: Improved stability and error handling
-- **Video File Support**: Full support for extracting and processing audio from video files  
+- **Video File Support**: Full support for extracting and processing audio from video files
 - **Retry Logic**: Robust error recovery with exponential backoff
 - **Silent Mode**: Fully automated processing capabilities
 - **Model Checking**: Automatic monitoring for newer Claude models

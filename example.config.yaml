@@ -48,6 +48,11 @@ fileProcessing:
   history:
     enabled: true                   # Track processed files to avoid duplicates
     file: ./process_history.json    # File to store processing history
+
+  # Output file settings
+  output:
+    createSegmentsFile: false       # Create separate .txt files with transcript segments
+                                    # Set to true to create .txt files, false to only append to .md files
   
   # Ignore patterns - files/directories to skip
   ignore:

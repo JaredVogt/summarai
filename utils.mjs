@@ -26,5 +26,5 @@ export function startSpinner(message) {
  * @returns {string} - Sanitized filename
  */
 export function sanitizeFilename(name) {
-  return name.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '_').substring(0, 60);
+  return name.replace(/[^a-zA-Z0-9-_. ]/g, '').replace(/\s+/g, '_').substring(0, 60);
 }

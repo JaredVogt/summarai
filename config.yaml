@@ -2,16 +2,27 @@
 
 # Directory Configuration
 directories:
-  # Apple Voice Memos location
-  voiceMemos: ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings
-  
-  # Google Drive directories
-  googleDrive:
-    unprocessed: ~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription/unprocessed
-    processed: ~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription/processed
-  
-  # Output directory for transcriptions
-  output: ~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription
+  # Watch directories - simplified structure for parser compatibility
+  watch:
+    voiceMemos:
+      name: "Voice Memos"
+      path: ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings
+      enabled: true
+      moveAfterProcessing: false
+      outputPath: ~/Obsidian/SolidBlack/VMs
+      # outputPath: ~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription
+      transcriptionService: scribe
+      compress: true
+    
+    googleDrive:
+      name: "Google Drive Unprocessed"
+      path: ~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription/unprocessed
+      enabled: true
+      moveAfterProcessing: true
+      processedPath: ~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription/processed
+      outputPath: ~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription
+      transcriptionService: scribe
+      compress: true
   
   # Temporary files directory
   temp: ./temp
@@ -42,6 +53,10 @@ fileProcessing:
   history:
     enabled: true
     file: ./process_history.json
+
+  # Output file settings
+  output:
+    createSegmentsFile: false        # Create separate .txt files with transcript segments
   
   # Ignore patterns
   ignore:
@@ -55,11 +70,6 @@ fileProcessing:
 
 # Watch Settings
 watch:
-  # Directories to watch (references from directories section)
-  enabled:
-    voiceMemos: true
-    googleDrive: true
-  
   # Initial processing options
   initialProcessing:
     cleanout: false              # Process all existing files on startup
@@ -118,7 +128,7 @@ transcription:
   
   # Scribe API settings
   scribe:
-    model: scribe_v1            # Options: scribe_v1, scribe_v1_experimental
+    model: scribe_v1_experimental            # Options: scribe_v1, scribe_v1_experimental
     language: eng               # ISO-639-1 or ISO-639-3 code
     tagAudioEvents: true        # Tag events like (laughter), (applause)
     diarize: true               # Speaker diarization

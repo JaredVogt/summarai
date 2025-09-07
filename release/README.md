@@ -1,16 +1,16 @@
-# watchDirectories Executable
+# summarai Executable
 
 ## Quick Start
 
-This is a standalone executable version of watchDirectories for macOS ARM64 (Apple Silicon).
+This is a standalone executable version of summarai for macOS ARM64 (Apple Silicon).
 
 ### First Run on macOS
 
 When running this executable for the first time, macOS will show a security warning:
-"watchDirectories cannot be opened because it is from an unidentified developer"
+"summarai cannot be opened because it is from an unidentified developer"
 
 **To run it:**
-1. Right-click (or Control-click) on `watchDirectories`
+1. Right-click (or Control-click) on `summarai`
 2. Select "Open" from the context menu
 3. Click "Open" in the security dialog
 4. This only needs to be done once
@@ -28,9 +28,14 @@ When running this executable for the first time, macOS will show a security warn
      - `directories.googleDrive.unprocessed`: Path to Google Drive folder
      - `transcription.defaultService`: Choose 'whisper' or 'scribe'
 
-3. **Run the Executable**
+3. **Customize Context Files (Optional)**
+   - Edit `instructions.md` to customize Claude's processing instructions
+   - Edit `nomenclature.txt` to add domain-specific terms and terminology
+   - These files control how transcripts are processed and summarized
+
+4. **Run the Executable**
    ```bash
-   ./watchDirectories
+   ./summarai
    ```
 
 ## Usage
@@ -39,19 +44,19 @@ When running this executable for the first time, macOS will show a security warn
 
 ```bash
 # Watch directories for new files
-./watchDirectories
+./summarai
 
 # Process recent voice memos (last 120 days)
-./watchDirectories --process-recent-vm
+./summarai --process-recent-vm
 
 # Process voice memos from specific date range
-./watchDirectories --process-recent-vm 1-1-25:1-31-25
+./summarai --process-recent-vm 1-1-25:1-31-25
 
 # Process existing Google Drive files
-./watchDirectories --cleanout
+./summarai --cleanout
 
 # Show help and all options
-./watchDirectories --help
+./summarai --help
 ```
 
 ### Command Options
@@ -72,6 +77,31 @@ The executable watches two directories:
 
 Supported formats: .m4a, .mp3, .wav, .mp4, .mov
 
+## Customizing Processing
+
+### Context Files
+
+You can customize how the application processes and summarizes your transcripts by editing these files:
+
+#### `instructions.md`
+Controls how Claude processes and summarizes transcripts. You can modify:
+- Summary format and length requirements
+- Keyword extraction rules  
+- Action item identification
+- Output formatting preferences
+
+#### `nomenclature.txt`
+Contains domain-specific terms and terminology that helps both transcription services and Claude:
+- Company/product names (e.g., "Wolff", "ProPatch")
+- Technical jargon and abbreviations
+- Industry-specific terms
+- Common replacements for misheard words
+
+**How it works:**
+- The application first checks for these files in the same directory as the executable
+- If not found, it uses embedded default content
+- This allows you to customize without breaking functionality
+
 ## Troubleshooting
 
 ### "Cannot find config.yaml"
@@ -87,8 +117,9 @@ Supported formats: .m4a, .mp3, .wav, .mp4, .mov
 - Ensure directories exist and have read/write permissions
 
 ## Version Info
-- Version: 1.0.0
-- Build Date: 2025-08-30
+- Version: 2.2.3
+- Build Date: 2025-09-06
+- Build Time: 2025-09-06T08:16:59.834Z
 - Platform: macOS ARM64 (Apple Silicon)
 - Runtime: Bun (embedded)
 

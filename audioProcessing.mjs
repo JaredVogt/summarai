@@ -1,4 +1,4 @@
-import { exec as execCb } from 'child_process';
+import { exec as execCb, spawn } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
@@ -6,6 +6,80 @@ import { startSpinner } from './utils.mjs';
 import { loadConfig, getConfigValue } from './configLoader.mjs';
 
 const exec = promisify(execCb);
+
+/**
+ * Secure FFmpeg execution using spawn instead of shell execution
+ * @param {Array} args - FFmpeg arguments array
+ * @param {string} operation - Operation description for logging
+ * @returns {Promise} - Promise that resolves when FFmpeg completes
+ */
+function secureFFmpegCall(args, operation = 'FFmpeg operation') {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn('ffmpeg', args, {
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    ffmpeg.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    ffmpeg.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    ffmpeg.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error(`${operation} failed with code ${code}: ${stderr}`));
+      }
+    });
+
+    ffmpeg.on('error', (error) => {
+      reject(new Error(`${operation} spawn error: ${error.message}`));
+    });
+  });
+}
+
+/**
+ * Secure FFprobe execution using spawn instead of shell execution
+ * @param {Array} args - FFprobe arguments array
+ * @param {string} operation - Operation description for logging
+ * @returns {Promise} - Promise that resolves when FFprobe completes
+ */
+function secureFFprobeCall(args, operation = 'FFprobe operation') {
+  return new Promise((resolve, reject) => {
+    const ffprobe = spawn('ffprobe', args, {
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    ffprobe.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    ffprobe.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    ffprobe.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error(`${operation} failed with code ${code}: ${stderr}`));
+      }
+    });
+
+    ffprobe.on('error', (error) => {
+      reject(new Error(`${operation} spawn error: ${error.message}`));
+    });
+  });
+}
 
 // Load configuration
 let config;
@@ -30,9 +104,14 @@ try {
  */
 async function isVideoFile(filePath) {
   try {
-    // Use ffprobe to get file info
-    const cmd = `ffprobe -v error -show_entries stream=codec_type -of json "${filePath}"`;
-    const { stdout } = await exec(cmd);
+    // Use secure ffprobe to get file info
+    const ffprobeArgs = [
+      '-v', 'error',
+      '-show_entries', 'stream=codec_type',
+      '-of', 'json',
+      filePath
+    ];
+    const { stdout } = await secureFFprobeCall(ffprobeArgs, 'Checking file type');
     const info = JSON.parse(stdout);
     
     // Check if any stream has codec_type 'video'
@@ -78,17 +157,37 @@ export async function convertToTempAAC(inputPath, tempDir, { forceAudioExtractio
     const codec = getConfigValue(config, 'audio.processing.codec', 'aac');
     const channels = getConfigValue(config, 'audio.processing.channels', 1);
     
+    let ffmpegArgs;
     if (isVideo) {
       // For video files: extract audio and optimize for speech
-      cmd = `ffmpeg -i "${inputPath}" -vn -af "atempo=${speedAdjustment}" -c:a ${codec} -b:a ${bitrate} -ar ${samplerate} -ac ${channels} "${tempAAC}" -y`;
+      ffmpegArgs = [
+        '-i', inputPath,
+        '-vn',
+        '-af', `atempo=${speedAdjustment}`,
+        '-c:a', codec,
+        '-b:a', bitrate,
+        '-ar', samplerate.toString(),
+        '-ac', channels.toString(),
+        tempAAC,
+        '-y'
+      ];
       console.log(`Extracting audio from video file (${lowQuality ? 'low' : 'normal'} quality)...`);
     } else {
       // For audio files: just optimize for speech
-      cmd = `ffmpeg -i "${inputPath}" -af "atempo=${speedAdjustment}" -c:a ${codec} -b:a ${bitrate} -ar ${samplerate} -ac ${channels} "${tempAAC}" -y`;
+      ffmpegArgs = [
+        '-i', inputPath,
+        '-af', `atempo=${speedAdjustment}`,
+        '-c:a', codec,
+        '-b:a', bitrate,
+        '-ar', samplerate.toString(),
+        '-ac', channels.toString(),
+        tempAAC,
+        '-y'
+      ];
       console.log(`Processing audio file (${lowQuality ? 'low' : 'normal'} quality)...`);
     }
-    
-    await exec(cmd);
+
+    await secureFFmpegCall(ffmpegArgs, `Processing ${isVideo ? 'video' : 'audio'} file`);
     stopSpinner(); // Stop the spinner animation when done
   } catch (error) {
     stopSpinner(); // Make sure to stop the spinner even if there's an error
@@ -175,9 +274,20 @@ export async function splitAudioFile(audioFilePath, outputDir, maxSizeMB = null)
       const startTime = i * chunkDuration;
       const chunkPath = path.join(outputDir, `${chunkPrefix}${i.toString().padStart(3, '0')}.${format}`);
       
-      // Use ffmpeg to extract chunk with config settings
-      const cmd = `ffmpeg -i "${audioFilePath}" -ss ${startTime} -t ${chunkDuration} -af "atempo=${speedAdjustment}" -c:a ${codec} -b:a ${bitrate} -ar ${sampleRate} -ac ${channels} "${chunkPath}" -y`;
-      await exec(cmd);
+      // Use secure ffmpeg to extract chunk with config settings
+      const ffmpegArgs = [
+        '-i', audioFilePath,
+        '-ss', startTime.toString(),
+        '-t', chunkDuration.toString(),
+        '-af', `atempo=${speedAdjustment}`,
+        '-c:a', codec,
+        '-b:a', bitrate,
+        '-ar', sampleRate.toString(),
+        '-ac', channels.toString(),
+        chunkPath,
+        '-y'
+      ];
+      await secureFFmpegCall(ffmpegArgs, `Creating chunk ${i+1}/${numberOfChunks}`);
       
       chunkPaths.push(chunkPath);
       console.log(`Created chunk ${i+1}/${numberOfChunks}: ${chunkPath}`);

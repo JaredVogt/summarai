@@ -6,9 +6,27 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const CACHE_FILE = path.join(__dirname, '.model-cache.json');
+// Use a safe cache file path that works in both development and executable modes
+const getCacheFilePath = () => {
+  const isExecutable = typeof Bun !== 'undefined' && process.argv[0]?.includes('summari');
+
+  if (isExecutable) {
+    // For Bun executables, use the current working directory or temp directory
+    const cacheDir = process.env.XDG_CACHE_HOME ||
+                     path.join(process.env.HOME || process.env.USERPROFILE || '/tmp', '.cache');
+    return path.join(cacheDir, 'summarai-model-cache.json');
+  } else {
+    // For development, use the project directory
+    return path.join(__dirname, '.model-cache.json');
+  }
+};
+
+const CACHE_FILE = getCacheFilePath();
 const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
 const MODELS_URL = 'https://docs.anthropic.com/en/docs/about-claude/models/overview';
+
+// Memory cache for Bun executables (VFS-compatible)
+let memoryCache = null;
 
 /**
  * Extract model information from the Anthropic docs HTML
@@ -58,43 +76,70 @@ function parseModelsFromHtml(html) {
 }
 
 /**
- * Load cached model data
+ * Load cached model data (VFS-compatible)
  * @returns {Object|null} - Cached data or null if expired/not found
  */
 function loadCache() {
-  // Disable caching when running as executable to avoid virtual filesystem issues
-  if (process.argv[1]?.includes('watchDirectories')) {
+  const isExecutable = typeof Bun !== 'undefined' && process.argv[0]?.includes('summari');
+
+  if (isExecutable) {
+    // Use memory cache for Bun executables (VFS limitation workaround)
+    if (memoryCache && (Date.now() - memoryCache.timestamp < CACHE_DURATION)) {
+      return memoryCache;
+    }
+    return null;
+  } else {
+    // Use file cache for development
+    try {
+      if (fs.existsSync(CACHE_FILE)) {
+        const data = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+        // Check if cache is still valid
+        if (Date.now() - data.timestamp < CACHE_DURATION) {
+          return data;
+        }
+      }
+    } catch (error) {
+      console.warn('[ModelChecker] Cache load failed:', error.message);
+    }
     return null;
   }
-  
-  try {
-    if (fs.existsSync(CACHE_FILE)) {
-      const data = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-      // Check if cache is still valid
-      if (Date.now() - data.timestamp < CACHE_DURATION) {
-        return data;
-      }
-    }
-  } catch (error) {
-    console.error('[ModelChecker] Error loading cache:', error.message);
-  }
-  return null;
 }
 
 /**
- * Save model data to cache
+ * Save model data to cache (VFS-compatible)
  * @param {Object} data - Model data to cache
  */
 function saveCache(data) {
-  // Disable caching when running as executable to avoid virtual filesystem issues
-  if (process.argv[1]?.includes('watchDirectories')) {
-    return;
-  }
-  
-  try {
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2));
-  } catch (error) {
-    console.error('[ModelChecker] Error saving cache:', error.message);
+  const isExecutable = typeof Bun !== 'undefined' && process.argv[0]?.includes('summari');
+
+  if (isExecutable) {
+    // Store in memory for Bun executables (VFS limitation workaround)
+    memoryCache = data;
+
+    // Also try to save to filesystem cache if possible
+    try {
+      const cacheDir = path.dirname(CACHE_FILE);
+      if (!fs.existsSync(cacheDir)) {
+        fs.mkdirSync(cacheDir, { recursive: true });
+      }
+      fs.writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2));
+    } catch (error) {
+      // Silently fail for executables - memory cache is the primary method
+      // Use console.warn here since logger might not be available during cache operations
+      console.warn('[ModelChecker] Cache save failed:', error.message);
+    }
+  } else {
+    // Store in file for development
+    try {
+      const cacheDir = path.dirname(CACHE_FILE);
+      if (!fs.existsSync(cacheDir)) {
+        fs.mkdirSync(cacheDir, { recursive: true });
+      }
+      fs.writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2));
+    } catch (error) {
+      // Use console.warn here since logger might not be available during cache operations
+      console.warn('[ModelChecker] Cache save failed:', error.message);
+    }
   }
 }
 
@@ -113,8 +158,10 @@ export async function fetchLatestModels(forceRefresh = false) {
   }
 
   try {
-    console.log('[ModelChecker] Checking for latest Claude models...');
-    
+    // Import logger here to avoid circular dependencies
+    const { default: logger, LogCategory } = await import('./src/logger.mjs');
+    logger.debug(LogCategory.MODEL, 'Checking for latest Claude models...');
+
     const response = await axios.get(MODELS_URL, {
       timeout: 10000,
       headers: {
@@ -129,11 +176,13 @@ export async function fetchLatestModels(forceRefresh = false) {
     
     return models;
   } catch (error) {
-    console.error('[ModelChecker] Error fetching models:', error.message);
+    // Import logger here to avoid circular dependencies
+    const { default: logger, LogCategory } = await import('./src/logger.mjs');
+    logger.warn(LogCategory.MODEL, `Error fetching models: ${error.message}`);
     // Return cached data if available, even if expired
     const cached = loadCache();
     if (cached) {
-      console.log('[ModelChecker] Using expired cache due to fetch error');
+      logger.warn(LogCategory.MODEL, 'Using expired cache due to fetch error');
       return cached;
     }
     // Return empty models if no cache
@@ -163,7 +212,9 @@ export async function checkForNewerModels(currentModel, silent = false) {
   const modelMatch = currentModel.match(/(claude-(?:opus|sonnet)-4)-(\d{8})/);
   if (!modelMatch) {
     if (!silent) {
-      console.log('[ModelChecker] Unable to parse current model format');
+      // Import logger here to avoid circular dependencies
+      const { default: logger, LogCategory } = await import('./src/logger.mjs');
+      logger.warn(LogCategory.MODEL, 'Unable to parse current model format');
     }
     return results;
   }
@@ -193,33 +244,39 @@ export async function checkForNewerModels(currentModel, silent = false) {
     }
   }
 
+  // Import logger here to avoid circular dependencies
+  const { default: logger, LogCategory } = await import('./src/logger.mjs');
+
   // Log findings if not silent
   if (!silent && results.hasNewer) {
-    console.log('\n[Info] Newer Claude models available:');
+    logger.info(LogCategory.MODEL, 'Newer Claude models available:');
     results.newerModels.forEach(model => {
-      console.log(`- ${model.latest} (currently using: ${model.current})`);
+      logger.info(LogCategory.MODEL, `- ${model.latest} (currently using: ${model.current})`);
     });
-    console.log('To update, modify the model in claudeAPI.mjs\n');
+    logger.info(LogCategory.MODEL, 'To update, modify the model in claudeAPI.mjs');
   } else if (!silent && !results.hasNewer) {
-    console.log('[ModelChecker] You are using the latest available model');
+    logger.info(LogCategory.MODEL, 'You are using the latest available model');
   }
 
   // Also show other available models if different type
   if (!silent && models.opus4 && !currentModel.includes('opus')) {
-    console.log(`[Info] Opus 4 available: ${models.opus4}`);
+    logger.info(LogCategory.MODEL, `Opus 4 available: ${models.opus4}`);
   }
   if (!silent && models.sonnet4 && !currentModel.includes('sonnet')) {
-    console.log(`[Info] Sonnet 4 available: ${models.sonnet4}`);
+    logger.info(LogCategory.MODEL, `Sonnet 4 available: ${models.sonnet4}`);
   }
 
   return results;
 }
 
-// Allow running directly for testing
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Allow running directly for testing (but not when imported by other modules)
+if (import.meta.url === `file://${process.argv[1]}` &&
+    !process.argv[1]?.includes('summarai') &&
+    !process.argv[1]?.includes('release/summarai')) {
   const testModel = process.argv[2] || 'claude-opus-4-20250514';
+  // Use console.log for direct testing since this is a standalone script
   console.log(`Testing with model: ${testModel}\n`);
-  
+
   checkForNewerModels(testModel)
     .then(results => {
       console.log('\nResults:', JSON.stringify(results, null, 2));

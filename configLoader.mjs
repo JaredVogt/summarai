@@ -314,12 +314,21 @@ function validateConfig(config) {
   const errors = [];
   
   // Check required directories
-  if (!config.directories?.voiceMemos) {
-    errors.push('directories.voiceMemos is required');
+  if (!config.directories?.watch || typeof config.directories.watch !== 'object') {
+    errors.push('directories.watch is required and must be an object containing directory configurations');
   }
   
-  if (!config.directories?.output) {
-    errors.push('directories.output is required');
+  // Validate each watch directory
+  if (config.directories?.watch && typeof config.directories.watch === 'object') {
+    Object.keys(config.directories.watch).forEach((key) => {
+      const dir = config.directories.watch[key];
+      if (!dir.name) {
+        errors.push(`directories.watch.${key}.name is required`);
+      }
+      if (!dir.path) {
+        errors.push(`directories.watch.${key}.path is required`);
+      }
+    });
   }
   
   // Check transcription service
@@ -447,6 +456,9 @@ export const defaultConfig = {
     supportedExtensions: {
       audio: ['.m4a', '.mp3', '.wav'],
       video: ['.mp4', '.mov']
+    },
+    output: {
+      createSegmentsFile: true  // Default to true for backward compatibility
     }
   }
 };

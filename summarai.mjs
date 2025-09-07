@@ -8,10 +8,41 @@ const args = process.argv.slice(2);
 const cleanoutMode = args.includes('--cleanout');
 const dryRunMode = args.includes('--dry-run');
 const showHelp = args.includes('--help') || args.includes('-h');
+const showVersion = args.includes('--version') || args.includes('-v');
+
+// Get version info
+function getVersionInfo() {
+  // Try to get version from build-time defines first (for compiled executable)
+  if (typeof BUILD_VERSION !== 'undefined') {
+    return {
+      version: BUILD_VERSION,
+      buildDate: BUILD_DATE || 'unknown',
+      buildTime: BUILD_TIME || 'unknown'
+    };
+  }
+
+  // Fallback to package.json for development
+  try {
+    const packageJson = JSON.parse(fs.readFileSync('./package.json', 'utf8'));
+    return {
+      version: packageJson.version,
+      buildDate: 'development',
+      buildTime: 'development'
+    };
+  } catch {
+    return {
+      version: 'unknown',
+      buildDate: 'unknown',
+      buildTime: 'unknown'
+    };
+  }
+}
+
+// Version check will be handled after imports
 
 // Show help immediately if requested, before any imports
 if (showHelp) {
-  console.log(`
+  logger.raw(`
 Usage: node watchDirectories.mjs [options]
 
 Options:
@@ -21,6 +52,7 @@ Options:
                                             MM-DD-YY:MM-DD-YY (date range)
                                             (no date = last 120 days)
   --dry-run                         When used with --process-recent-vm, show what would be processed without actually processing
+  --version, -v                     Show version information
   --help, -h                        Show this help message
 
 This tool watches for new audio/video files in:
@@ -50,9 +82,21 @@ import { createInterface } from 'readline';
 import { processVoiceMemo } from './transcribe.mjs';
 import { cleanupTempDir } from './audioProcessing.mjs';
 import { loadConfig, getConfigValue } from './configLoader.mjs';
+import logger, { LogCategory, LogStatus } from './src/logger.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Show version immediately if requested, after imports
+if (showVersion) {
+  const versionInfo = getVersionInfo();
+  console.log(`summarai v${versionInfo.version.replace(/"/g, '')}`);
+  const buildTime = versionInfo.buildTime.replace(/"/g, '');
+  const timeOnly = buildTime.includes('T') ? buildTime.split('T')[1]?.split('.')[0] : '';
+  console.log(`Build: ${versionInfo.buildDate.replace(/"/g, '')} ${timeOnly}`);
+  console.log(`Platform: ${process.platform} ${process.arch}`);
+  process.exit(0);
+}
 
 /**
  * Prompt user for input using readline
@@ -133,10 +177,10 @@ function getFileDirectoryConfig(filePath, directoryConfigs) {
 let config;
 try {
   config = loadConfig();
-  console.log('✓ Configuration loaded successfully');
+  logger.configStatus('Configuration loaded successfully', true);
 } catch (error) {
-  console.error('Error loading configuration:', error.message);
-  console.error('Please ensure config.yaml exists and is valid.');
+  logger.configStatus(`Error loading configuration: ${error.message}`, false);
+  logger.error(LogCategory.CONFIG, 'Please ensure config.yaml exists and is valid');
   process.exit(1);
 }
 
@@ -294,11 +338,26 @@ async function moveToProcessed(originalPath, compressedPath, generatedName, temp
     const newPath = path.join(processedDir, newFilename);
     
     // Get file sizes for logging
-    const originalStats = fs.statSync(originalPath);
-    const compressedStats = fs.statSync(compressedPath);
-    const originalSizeMB = (originalStats.size / (1024 * 1024)).toFixed(2);
-    const compressedSizeMB = (compressedStats.size / (1024 * 1024)).toFixed(2);
-    const compressionRatio = (originalStats.size / compressedStats.size).toFixed(1);
+    let originalStats, compressedStats, originalSizeMB, compressedSizeMB, compressionRatio;
+
+    try {
+      compressedStats = fs.statSync(compressedPath);
+      compressedSizeMB = (compressedStats.size / (1024 * 1024)).toFixed(2);
+
+      if (fs.existsSync(originalPath)) {
+        originalStats = fs.statSync(originalPath);
+        originalSizeMB = (originalStats.size / (1024 * 1024)).toFixed(2);
+        compressionRatio = (originalStats.size / compressedStats.size).toFixed(1);
+      } else {
+        originalSizeMB = 'N/A';
+        compressionRatio = 'N/A';
+      }
+    } catch (error) {
+      console.warn(`Warning: Could not get file stats: ${error.message}`);
+      originalSizeMB = 'N/A';
+      compressedSizeMB = 'N/A';
+      compressionRatio = 'N/A';
+    }
     
     console.log(`Moving compressed file to processed directory:`);
     console.log(`  Original: ${path.basename(originalPath)} (${originalSizeMB} MB)`);
@@ -310,9 +369,13 @@ async function moveToProcessed(originalPath, compressedPath, generatedName, temp
     fs.renameSync(compressedPath, newPath);
     console.log(`✓ Compressed file moved to: ${newPath}`);
     
-    // Delete the original large file
-    fs.unlinkSync(originalPath);
-    console.log(`✓ Original file deleted: ${path.basename(originalPath)}`);
+    // Delete the original large file if it exists and is different from compressed file
+    if (originalPath !== compressedPath && fs.existsSync(originalPath)) {
+      fs.unlinkSync(originalPath);
+      console.log(`✓ Original file deleted: ${path.basename(originalPath)}`);
+    } else if (!fs.existsSync(originalPath)) {
+      console.log(`ℹ️ Original file already moved or deleted: ${path.basename(originalPath)}`);
+    }
     
     // Clean up the temp directory
     if (tempDir && fs.existsSync(tempDir)) {
@@ -320,7 +383,11 @@ async function moveToProcessed(originalPath, compressedPath, generatedName, temp
       console.log(`✓ Temp directory cleaned up`);
     }
     
-    console.log(`✓ Successfully processed: saved ${((originalStats.size - compressedStats.size) / (1024 * 1024)).toFixed(2)} MB`);
+    if (originalStats && compressedStats) {
+      console.log(`✓ Successfully processed: saved ${((originalStats.size - compressedStats.size) / (1024 * 1024)).toFixed(2)} MB`);
+    } else {
+      console.log(`✓ Successfully processed and moved to: ${newPath}`);
+    }
     return newPath;
   } catch (err) {
     console.error(`Error moving file to processed: ${err.message}`);
@@ -342,19 +409,19 @@ async function processQueue() {
     const filePath = processingQueue.shift();
     const remainingCount = processingQueue.length;
     
-    console.log(`\n[Queue] Processing ${path.basename(filePath)} (${remainingCount} remaining in queue)`);
-    
+    logger.queueStatus(`Processing ${path.basename(filePath)} (${remainingCount} remaining in queue)`);
+
     try {
       // Process the file
       await processFile(filePath);
-      
+
       // Configured delay between files
       if (processingQueue.length > 0) {
         const delay = getConfigValue(config, 'watch.queue.delayBetweenFiles', 2000);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     } catch (error) {
-      console.error(`Error processing ${filePath} from queue:`, error.message);
+      logger.failure(LogCategory.QUEUE, `Error processing ${path.basename(filePath)}: ${error.message}`);
     }
   }
   
@@ -373,14 +440,14 @@ function addToQueue(filePath) {
   
   // Check if file is already in queue or being processed
   if (processingQueue.includes(filePath) || processed.has(filePath)) {
-    console.log(`File already queued or processed: ${path.basename(filePath)}`);
+    logger.info(LogCategory.QUEUE, `File already queued or processed: ${path.basename(filePath)}`);
     return;
   }
-  
+
   const source = getFileSource(filePath);
   const queuePosition = processingQueue.length + 1;
-  console.log(`\n[${new Date().toLocaleTimeString()}] New file detected from ${source}: ${path.basename(filePath)}`);
-  console.log(`Adding to queue (position ${queuePosition})`);
+  logger.info(LogCategory.WATCH, `New file detected from ${source}: ${path.basename(filePath)}`);
+  logger.queueStatus(`Adding to queue (position ${queuePosition})`);
   
   processingQueue.push(filePath);
   
@@ -511,13 +578,13 @@ async function processRecentVoiceMemos(startDate, endDate, dryRun = false) {
       config.name === 'Voice Memos' || config.name.toLowerCase().includes('voice memo'));
     
     if (!voiceMemoConfig) {
-      console.log('Voice Memos directory not configured in directories.watch');
+      logger.warn(LogCategory.CONFIG, 'Voice Memos directory not configured in directories.watch');
       return;
     }
-    
+
     // Check if Voice Memos directory exists
     if (!fs.existsSync(voiceMemoConfig.watchPath)) {
-      console.log('Voice Memos directory not found:', voiceMemoConfig.watchPath);
+      logger.failure(LogCategory.CONFIG, `Voice Memos directory not found: ${voiceMemoConfig.watchPath}`);
       return;
     }
     
@@ -539,7 +606,7 @@ async function processRecentVoiceMemos(startDate, endDate, dryRun = false) {
       .sort((a, b) => a.modTime - b.modTime); // Sort by modification time, oldest first
     
     if (allVoiceMemoFiles.length === 0) {
-      console.log(`No Voice Memo files found from ${startDateStr} to ${endDateStr}.`);
+      logger.info(LogCategory.PROCESSING, `No Voice Memo files found from ${startDateStr} to ${endDateStr}`);
       return;
     }
     
@@ -559,30 +626,30 @@ async function processRecentVoiceMemos(startDate, endDate, dryRun = false) {
     });
     
     // Display results
-    console.log(`\nFound ${allVoiceMemoFiles.length} Voice Memo file(s) from ${startDateStr} to ${endDateStr}:\n`);
-    
+    logger.section(`Voice Memo Scan Results: ${startDateStr} to ${endDateStr}`);
+    logger.info(LogCategory.PROCESSING, `Found ${allVoiceMemoFiles.length} Voice Memo file(s)`);
+
     if (processedFiles.length > 0) {
-      console.log(`✓ Already processed (${processedFiles.length}):`);
+      logger.subsection(`Already Processed (${processedFiles.length})`);
       processedFiles.forEach(item => {
         const modTime = item.modTime.toLocaleString();
         const sizeMB = (item.stats.size / (1024 * 1024)).toFixed(2);
-        console.log(`  ✓ ${item.name} (${sizeMB} MB, modified: ${modTime})`);
+        logger.fileStatus(item.name, LogStatus.SUCCESS, `${sizeMB} MB, modified: ${modTime}`);
       });
-      console.log('');
     }
     
     if (unprocessedFiles.length > 0) {
-      console.log(`→ To be processed (${unprocessedFiles.length}):`);
+      logger.subsection(`To Be Processed (${unprocessedFiles.length})`);
       let totalSize = 0;
       unprocessedFiles.forEach(item => {
         const modTime = item.modTime.toLocaleString();
         const sizeMB = (item.stats.size / (1024 * 1024)).toFixed(2);
         totalSize += item.stats.size;
-        console.log(`  → ${item.name} (${sizeMB} MB, modified: ${modTime})`);
+        logger.fileStatus(item.name, LogStatus.ARROW, `${sizeMB} MB, modified: ${modTime}`);
       });
-      
+
       const totalSizeMB = (totalSize / (1024 * 1024)).toFixed(2);
-      console.log(`\nTotal size to process: ${totalSizeMB} MB`);
+      logger.info(LogCategory.PROCESSING, `Total size to process: ${totalSizeMB} MB`);
       
       if (dryRun) {
         console.log('\n[Dry Run] This was a preview. Use without --dry-run to actually process these files.');
@@ -606,16 +673,16 @@ async function processRecentVoiceMemos(startDate, endDate, dryRun = false) {
         console.log('\n[Process Recent VM] Finished processing Voice Memos.\n');
       }
     } else {
-      console.log(`All Voice Memos from ${startDateStr} to ${endDateStr} have already been processed.`);
+      logger.info(LogCategory.PROCESSING, `All Voice Memos from ${startDateStr} to ${endDateStr} have already been processed.`);
     }
-    
-    console.log(`Summary:`);
-    console.log(`- Total Voice Memos from ${startDateStr} to ${endDateStr}: ${allVoiceMemoFiles.length}`);
-    console.log(`- Already processed: ${processedFiles.length}`);
-    console.log(`- To be processed: ${unprocessedFiles.length}`);
-    
+
+    logger.subsection('Summary');
+    logger.info(LogCategory.PROCESSING, `Total Voice Memos from ${startDateStr} to ${endDateStr}: ${allVoiceMemoFiles.length}`);
+    logger.info(LogCategory.PROCESSING, `Already processed: ${processedFiles.length}`);
+    logger.info(LogCategory.PROCESSING, `To be processed: ${unprocessedFiles.length}`);
+
   } catch (err) {
-    console.error('Error during Voice Memos scan:', err.message);
+    logger.failure(LogCategory.PROCESSING, `Error during Voice Memos scan: ${err.message}`);
   }
 }
 
@@ -623,7 +690,7 @@ async function processRecentVoiceMemos(startDate, endDate, dryRun = false) {
  * Process all existing files in the Google Drive unprocessed directory
  */
 async function cleanoutUnprocessed() {
-  console.log('\n[Cleanout Mode] Processing existing files in unprocessed directory...');
+  logger.section('Cleanout Mode - Processing Existing Files');
   
   try {
     // Find Google Drive unprocessed directory config
@@ -632,13 +699,13 @@ async function cleanoutUnprocessed() {
       (config.name.toLowerCase().includes('google') && config.name.toLowerCase().includes('drive')));
     
     if (!googleDriveConfig) {
-      console.log('Google Drive unprocessed directory not configured in directories.watch');
+      logger.warn(LogCategory.CONFIG, 'Google Drive unprocessed directory not configured in directories.watch');
       return;
     }
-    
+
     // Check if directory exists
     if (!fs.existsSync(googleDriveConfig.watchPath)) {
-      console.log('Google Drive unprocessed directory not found:', googleDriveConfig.watchPath);
+      logger.failure(LogCategory.CONFIG, `Google Drive unprocessed directory not found: ${googleDriveConfig.watchPath}`);
       return;
     }
     
@@ -659,11 +726,11 @@ async function cleanoutUnprocessed() {
       return;
     }
     
-    console.log(`Found ${supportedFiles.length} file(s) to process (sorted by most recent first):`);
+    logger.info(LogCategory.PROCESSING, `Found ${supportedFiles.length} file(s) to process (sorted by most recent first):`);
     supportedFiles.forEach(file => {
       const stats = fs.statSync(file);
       const modTime = stats.mtime.toLocaleString();
-      console.log(`  - ${path.basename(file)} (modified: ${modTime})`);
+      logger.fileStatus(path.basename(file), LogStatus.ARROW, `modified: ${modTime}`);
     });
     console.log('');
     
@@ -734,17 +801,17 @@ async function processFile(filePath) {
     // Merge directory-specific options with defaults
     const processingOptions = {
       silentMode: getConfigValue(config, 'modes.silent.enabled', true),
-      transcriptionService: dirConfig.processingOptions.transcriptionService || 
+      transcriptionService: dirConfig.processingOptions.transcriptionService ||
                             getConfigValue(config, 'transcription.defaultService', 'scribe'),
-      model: dirConfig.processingOptions.model || 
-             (dirConfig.processingOptions.transcriptionService === 'scribe' ? 
+      model: dirConfig.processingOptions.model ||
+             (dirConfig.processingOptions.transcriptionService === 'scribe' ?
               getConfigValue(config, 'transcription.scribe.model', 'scribe_v1') :
               getConfigValue(config, 'transcription.whisper.model', 'whisper-1')),
-      maxSpeakers: dirConfig.processingOptions.maxSpeakers || 
+      maxSpeakers: dirConfig.processingOptions.maxSpeakers ||
                    getConfigValue(config, 'transcription.scribe.maxSpeakers', null),
       outputPath: dirConfig.outputPath,
       compress: dirConfig.processingOptions.compress !== false,
-      bitrate: dirConfig.processingOptions.bitrate || 
+      bitrate: dirConfig.processingOptions.bitrate ||
                getConfigValue(config, 'audio.compression.normal.bitrate', '48k'),
       diarize: dirConfig.processingOptions.diarize !== false,
       fromDirectory: dirConfig.name
@@ -768,7 +835,7 @@ async function processFile(filePath) {
     }
     
   } catch (err) {
-    console.error('✗ Error processing file:', err.message);
+    logger.failure(LogCategory.PROCESSING, `Error processing file: ${err.message}`);
     // Remove from processed set so it can be retried
     processed.delete(filePath);
   } finally {
@@ -784,19 +851,19 @@ async function validateDirectories() {
   directoryConfigs = loadDirectoryConfigs();
   const validConfigs = [];
   
-  console.log('\nValidating configured directories...\n');
+  logger.section('Validating Configured Directories');
   
   for (const dirConfig of directoryConfigs) {
     if (!dirConfig.enabled) {
-      console.log(`⏭️  Skipping disabled: ${dirConfig.name}`);
+      logger.info(LogCategory.CONFIG, `⏭️  Skipping disabled: ${dirConfig.name}`);
       continue;
     }
     
     const exists = fs.existsSync(dirConfig.watchPath);
     
     if (!exists) {
-      console.log(`⚠️  ${dirConfig.name} directory not found:`);
-      console.log(`    Path: ${dirConfig.watchPath}`);
+      logger.warn(LogCategory.CONFIG, `${dirConfig.name} directory not found:`);
+      logger.warn(LogCategory.CONFIG, `Path: ${dirConfig.watchPath}`);
       
       const answer = await askUser(`\nHow would you like to proceed?\n` +
         `  [1] Skip this directory\n` +
@@ -807,9 +874,9 @@ async function validateDirectories() {
       
       switch(answer) {
         case '1':
-          console.log(`→ Skipping ${dirConfig.name}\n`);
+          logger.info(LogCategory.CONFIG, `→ Skipping ${dirConfig.name}`);
           continue;
-          
+
         case '2':
           dirConfig.watchPath = process.cwd();
           if (dirConfig.moveAfterProcessing && !dirConfig.processedPath) {
@@ -818,52 +885,52 @@ async function validateDirectories() {
           if (!dirConfig.outputPath || dirConfig.outputPath === './output') {
             dirConfig.outputPath = process.cwd();
           }
-          console.log(`→ Using current directory for ${dirConfig.name}\n`);
+          logger.info(LogCategory.CONFIG, `→ Using current directory for ${dirConfig.name}`);
           break;
-          
+
         case '3':
           fs.mkdirSync(dirConfig.watchPath, { recursive: true });
-          console.log(`✓ Created directory: ${dirConfig.watchPath}\n`);
+          logger.success(LogCategory.CONFIG, `Created directory: ${dirConfig.watchPath}`);
           break;
-          
+
         case '4':
         default:
-          console.log('\nPlease update your config.yaml and try again.');
+          logger.info(LogCategory.CONFIG, 'Please update your config.yaml and try again');
           process.exit(0);
       }
     }
     
     // Validate processed directory if needed
     if (dirConfig.moveAfterProcessing && dirConfig.processedPath && !fs.existsSync(dirConfig.processedPath)) {
-      console.log(`Creating processed directory for ${dirConfig.name}...`);
+      logger.info(LogCategory.CONFIG, `Creating processed directory for ${dirConfig.name}...`);
       fs.mkdirSync(dirConfig.processedPath, { recursive: true });
-      console.log(`✓ Created: ${dirConfig.processedPath}`);
+      logger.success(LogCategory.CONFIG, `Created: ${dirConfig.processedPath}`);
     }
-    
+
     // Validate output directory
     if (dirConfig.outputPath && !fs.existsSync(dirConfig.outputPath)) {
-      console.log(`Creating output directory for ${dirConfig.name}...`);
+      logger.info(LogCategory.CONFIG, `Creating output directory for ${dirConfig.name}...`);
       fs.mkdirSync(dirConfig.outputPath, { recursive: true });
-      console.log(`✓ Created: ${dirConfig.outputPath}`);
+      logger.success(LogCategory.CONFIG, `Created: ${dirConfig.outputPath}`);
     }
     
     if (fs.existsSync(dirConfig.watchPath)) {
       validConfigs.push(dirConfig);
-      console.log(`✓ Watching ${dirConfig.name}: ${dirConfig.watchPath}`);
+      logger.validationResult(`Watching ${dirConfig.name}`, true, dirConfig.watchPath);
     }
   }
   
   if (validConfigs.length === 0) {
-    console.error('\n❌ No directories are being watched.');
-    console.error('All configured directories were either skipped or not found.');
-    console.error('\nTo fix this:');
-    console.error('  1. Check your config.yaml file');
-    console.error('  2. Ensure at least one directory path is correct');
-    console.error('  3. Run with --help for more information');
+    logger.failure(LogCategory.SYSTEM, 'No directories are being watched');
+    logger.error(LogCategory.SYSTEM, 'All configured directories were either skipped or not found');
+    logger.raw('\nTo fix this:');
+    logger.raw('  1. Check your config.yaml file');
+    logger.raw('  2. Ensure at least one directory path is correct');
+    logger.raw('  3. Run with --help for more information');
     process.exit(1);
   }
-  
-  console.log(`\n✓ Watching ${validConfigs.length} director${validConfigs.length === 1 ? 'y' : 'ies'}\n`);
+
+  logger.success(LogCategory.WATCH, `Watching ${validConfigs.length} director${validConfigs.length === 1 ? 'y' : 'ies'}`);
   
   // Update global directory configs with validated ones
   directoryConfigs = validConfigs;
@@ -897,9 +964,10 @@ async function startWatching() {
   }
   
   // Start watching
-  console.log('\nWatching for new audio/video files...');
-  console.log('Supported formats:', SUPPORTED_EXTENSIONS.join(', '));
-  console.log('Press Ctrl+C to stop\n');
+  logger.section('File Watching Active');
+  logger.info(LogCategory.WATCH, 'Watching for new audio/video files...');
+  logger.info(LogCategory.WATCH, `Supported formats: ${SUPPORTED_EXTENSIONS.join(', ')}`);
+  logger.info(LogCategory.SYSTEM, 'Press Ctrl+C to stop');
 
   // Get watch configuration
   const stabilityThreshold = getConfigValue(config, 'watch.stability.threshold', 2000);
@@ -930,14 +998,24 @@ async function startWatching() {
 
   watcher
     .on('add', addToQueue)
-    .on('error', error => console.error('Watcher error:', error));
+    .on('error', error => logger.failure(LogCategory.WATCH, `Watcher error: ${error.message}`));
 
   // Handle graceful shutdown
   process.on('SIGINT', () => {
-    console.log('\n\nStopping file watcher...');
+    logger.info(LogCategory.SYSTEM, 'Stopping file watcher...');
     watcher.close();
     process.exit(0);
   });
+}
+
+// Display version info on startup
+const versionInfo = getVersionInfo();
+const cleanVersion = versionInfo.version.replace(/"/g, '');
+logger.info(LogCategory.SYSTEM, `summarai v${cleanVersion} starting...`);
+if (versionInfo.buildDate !== 'development') {
+  const cleanBuildTime = versionInfo.buildTime.replace(/"/g, '');
+  const timeOnly = cleanBuildTime.includes('T') ? cleanBuildTime.split('T')[1]?.split('.')[0] : '';
+  logger.debug(LogCategory.SYSTEM, `Build: ${versionInfo.buildDate.replace(/"/g, '')} ${timeOnly}`);
 }
 
 // Start the application
