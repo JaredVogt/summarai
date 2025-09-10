@@ -81,7 +81,7 @@ import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
 import { processVoiceMemo } from './transcribe.mjs';
 import { cleanupTempDir } from './audioProcessing.mjs';
-import { loadConfig, getConfigValue } from './configLoader.mjs';
+import { loadConfig, getConfigValue, getLastConfigPath } from './configLoader.mjs';
 import logger, { LogCategory, LogStatus } from './src/logger.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -178,6 +178,10 @@ let config;
 try {
   config = loadConfig();
   logger.configStatus('Configuration loaded successfully', true);
+  const loadedConfigPath = getLastConfigPath?.();
+  if (loadedConfigPath) {
+    logger.info(LogCategory.CONFIG, `Using config: ${loadedConfigPath}`);
+  }
 } catch (error) {
   logger.configStatus(`Error loading configuration: ${error.message}`, false);
   logger.error(LogCategory.CONFIG, 'Please ensure config.yaml exists and is valid');
@@ -247,6 +251,10 @@ const processed = new Set();
 // Processing queue to ensure sequential file processing
 const processingQueue = [];
 let isProcessingQueue = false;
+
+// Retry mechanism
+const retryCount = new Map(); // filePath -> attemptNumber
+const retryTimeouts = new Map(); // filePath -> timeoutId
 
 /**
  * Check if a file has a supported extension and is not a temp file
@@ -333,8 +341,18 @@ async function moveToProcessed(originalPath, compressedPath, generatedName, temp
       fs.mkdirSync(processedDir, { recursive: true });
     }
     
-    // Compressed files are always .m4a
-    const newFilename = generatedName + '.m4a';
+    // Determine appropriate file extension
+    // If compressed path is same as original, no compression occurred - preserve extension
+    let newFilename;
+    if (compressedPath === originalPath) {
+      const originalExt = path.extname(originalPath);
+      newFilename = generatedName + originalExt;
+      console.log(`No compression detected, preserving original extension: ${originalExt}`);
+    } else {
+      // Actual compression occurred, use .m4a
+      newFilename = generatedName + '.m4a';
+      console.log(`Compression detected, using .m4a extension`);
+    }
     const newPath = path.join(processedDir, newFilename);
     
     // Get file sizes for logging
@@ -396,6 +414,57 @@ async function moveToProcessed(originalPath, compressedPath, generatedName, temp
 }
 
 /**
+ * Schedule a retry for a failed file
+ * @param {string} filePath - Path to the file to retry
+ * @param {Error} error - The error that caused the failure
+ */
+function scheduleRetry(filePath, error) {
+  const maxAttempts = getConfigValue(config, 'watch.validation.retries.maxAttempts', 3);
+  const retryDelays = getConfigValue(config, 'watch.validation.retries.delays', [5000, 15000, 30000]);
+  
+  const currentAttempt = retryCount.get(filePath) || 0;
+  const nextAttempt = currentAttempt + 1;
+  
+  if (nextAttempt >= maxAttempts) {
+    logger.failure(LogCategory.QUEUE, 
+      `File ${path.basename(filePath)} failed after ${maxAttempts} attempts, giving up: ${error.message}`
+    );
+    retryCount.delete(filePath);
+    return;
+  }
+  
+  const delay = retryDelays[nextAttempt - 1] || retryDelays[retryDelays.length - 1] || 30000;
+  retryCount.set(filePath, nextAttempt);
+  
+  // Check if error is retryable
+  const isRetryable = error.name === 'ValidationError' && 
+    (error.code === 'fileIntegrity' || 
+     error.message.includes('moov atom') ||
+     error.message.includes('corrupted') ||
+     error.message.includes('incomplete'));
+  
+  if (!isRetryable) {
+    logger.failure(LogCategory.QUEUE, 
+      `File ${path.basename(filePath)} failed with non-retryable error: ${error.message}`
+    );
+    retryCount.delete(filePath);
+    return;
+  }
+  
+  logger.info(LogCategory.QUEUE, 
+    `Scheduling retry ${nextAttempt}/${maxAttempts} for ${path.basename(filePath)} in ${delay/1000}s`
+  );
+  
+  const timeoutId = setTimeout(() => {
+    retryTimeouts.delete(filePath);
+    processingQueue.push(filePath);
+    processQueue();
+  }, delay);
+  
+  retryTimeouts.set(filePath, timeoutId);
+}
+
+/**
  * Process files from the queue sequentially
  */
 async function processQueue() {
@@ -409,11 +478,20 @@ async function processQueue() {
     const filePath = processingQueue.shift();
     const remainingCount = processingQueue.length;
     
-    logger.queueStatus(`Processing ${path.basename(filePath)} (${remainingCount} remaining in queue)`);
+    const currentAttempt = retryCount.get(filePath) || 0;
+    const attemptText = currentAttempt > 0 ? ` (attempt ${currentAttempt + 1})` : '';
+    
+    logger.queueStatus(`Processing ${path.basename(filePath)}${attemptText} (${remainingCount} remaining in queue)`);
 
     try {
       // Process the file
       await processFile(filePath);
+      
+      // Success - clear any retry tracking
+      if (retryCount.has(filePath)) {
+        logger.success(LogCategory.QUEUE, `File ${path.basename(filePath)} processed successfully after ${currentAttempt + 1} attempts`);
+        retryCount.delete(filePath);
+      }
 
       // Configured delay between files
       if (processingQueue.length > 0) {
@@ -422,6 +500,7 @@ async function processQueue() {
       }
     } catch (error) {
       logger.failure(LogCategory.QUEUE, `Error processing ${path.basename(filePath)}: ${error.message}`);
+      scheduleRetry(filePath, error);
     }
   }
   
@@ -814,7 +893,7 @@ async function processFile(filePath) {
       bitrate: dirConfig.processingOptions.bitrate ||
                getConfigValue(config, 'audio.compression.normal.bitrate', '48k'),
       diarize: dirConfig.processingOptions.diarize !== false,
-      fromDirectory: dirConfig.name
+      fromGoogleDrive: dirConfig.name.toLowerCase().includes('google drive')
     };
     
     const result = await processVoiceMemo(filePath, processingOptions);

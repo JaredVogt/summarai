@@ -27,7 +27,8 @@ import {
   validateFilePath,
   validateAudioOptions,
   validateTranscriptionOptions,
-  validateFileSize
+  validateFileSize,
+  validateFileIntegrity
 } from './src/validation.mjs';
 import logger, { LogCategory, LogStatus } from './src/logger.mjs';
 
@@ -180,6 +181,13 @@ export async function processVoiceMemo(filePath, options = {}) {
   const globalCreateSegmentsFile = getConfigValue(config, 'fileProcessing.output.createSegmentsFile', true);
   const shouldCreateSegmentsFile = createSegmentsFile !== null ? createSegmentsFile : globalCreateSegmentsFile;
 
+  let usedTemp = false; // Initialize outside try block for error handling
+
+  // Debug Google Drive flag
+  if (fromGoogleDrive) {
+    logger.info(LogCategory.PROCESSING, `Processing Google Drive file: ${path.basename(filePath)}`);
+  }
+
   try {
     // Validate inputs
     const validatedPath = validateFilePath(filePath, true);
@@ -192,6 +200,27 @@ export async function processVoiceMemo(filePath, options = {}) {
 
     // Validate file size
     validateFileSize(validatedPath, 1024); // 1GB limit
+
+    // Get validation configuration
+    const validationEnabled = getConfigValue(config, 'watch.validation.enabled', true);
+    const validationLevel = getConfigValue(config, 'watch.validation.level', 'moov');
+    const minFileSize = getConfigValue(config, 'watch.validation.minFileSize', 1024);
+
+    // Check minimum file size
+    const stats = fs.statSync(validatedPath);
+    if (stats.size < minFileSize) {
+      throw new ValidationError(
+        `File size ${stats.size} bytes is below minimum of ${minFileSize} bytes`,
+        'fileSize'
+      );
+    }
+
+    // Validate file integrity if enabled
+    if (validationEnabled) {
+      logger.info(LogCategory.PROCESSING, `Validating file integrity (${validationLevel} level)...`);
+      await validateFileIntegrity(validatedPath, validationLevel);
+      logger.success(LogCategory.PROCESSING, 'File validation passed');
+    }
 
     const originalFileName = path.basename(validatedPath);
     let recordingDateTime = null;
@@ -231,11 +260,11 @@ export async function processVoiceMemo(filePath, options = {}) {
       forceAudioExtraction: forceVideoMode,
       lowQuality: lowQuality
     });
-    let usedTemp = true;
+    usedTemp = true;
     logger.processing(LogCategory.PROCESSING, `Processing file: ${originalFileName}`);
     // Get file size for logging
-    const stats = fs.statSync(tempAACPath);
-    const fileSizeMB = stats.size / (1024 * 1024);
+    const tempStats = fs.statSync(tempAACPath);
+    const fileSizeMB = tempStats.size / (1024 * 1024);
 
     logger.info(LogCategory.PROCESSING, `Using transcription service: ${transcriptionService === 'whisper' ? 'OpenAI Whisper' : 'ElevenLabs Scribe'}`);
     
@@ -380,6 +409,8 @@ export async function processVoiceMemo(filePath, options = {}) {
     
     // If from Google Drive, return the compressed file path for moving
     if (fromGoogleDrive && usedTemp) {
+      logger.info(LogCategory.PROCESSING, `Google Drive file processed: returning compressed path for moving`);
+      logger.debug(LogCategory.PROCESSING, `Compressed AAC path: ${tempAACPath}`);
       return { 
         finalName, 
         targetDir, 
@@ -390,6 +421,11 @@ export async function processVoiceMemo(filePath, options = {}) {
       };
     } else {
       // For non-Google Drive files, clean up temp as usual
+      if (!fromGoogleDrive) {
+        logger.debug(LogCategory.PROCESSING, `Non-Google Drive file: cleaning up temp files`);
+      } else {
+        logger.warning(LogCategory.PROCESSING, `Google Drive file but no temp used - compression may have failed`);
+      }
       if (usedTemp) cleanupTempDir(tempDir);
       return { finalName, targetDir, transcript, segmentsContent };
     }
@@ -407,10 +443,33 @@ export async function processVoiceMemo(filePath, options = {}) {
     } else if (error.name === 'ValidationError') {
       // Re-throw validation errors as-is
       throw error;
+    } else if (error.stderr && (error.stderr.includes('moov atom not found') || 
+                               error.stderr.includes('Invalid data found'))) {
+      // Handle ffmpeg/ffprobe moov atom errors specifically
+      throw new ValidationError(
+        'File appears to be incomplete or corrupted (moov atom missing or invalid data)',
+        'fileIntegrity',
+        { originalError: error }
+      );
     } else {
+      // Check for other processing-related errors that might be retryable
+      const errorMessage = error.message || error.stderr || String(error);
+      const isFileIntegrityError = errorMessage.includes('moov atom') || 
+                                   errorMessage.includes('corrupted') || 
+                                   errorMessage.includes('incomplete') ||
+                                   errorMessage.includes('Invalid data found');
+      
+      if (isFileIntegrityError) {
+        throw new ValidationError(
+          `File integrity issue detected: ${errorMessage}`,
+          'fileIntegrity',
+          { originalError: error }
+        );
+      }
+      
       // Wrap other errors as processing errors
       throw new ProcessingError(
-        `Failed to process voice memo: ${error.message}`,
+        `Failed to process voice memo: ${errorMessage}`,
         { filePath, originalError: error.message, context }
       );
     }

@@ -16,11 +16,11 @@ directories:
     
     googleDrive:
       name: "Google Drive Unprocessed"
-      path: ~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription/unprocessed
+      path: "~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription/unprocessed"
       enabled: true
       moveAfterProcessing: true
-      processedPath: ~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription/processed
-      outputPath: ~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription
+      processedPath: "~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription/processed"  # this is where the audio files go
+      outputPath: ~/Obsidian/SolidBlack/VMs
       transcriptionService: scribe
       compress: true
   
@@ -121,10 +121,6 @@ transcription:
     language: null              # null for auto-detect
     temperature: 0
     responseFormat: verbose_json
-    nomenclaturePrompt: |
-      Common names and terms: Jared, Wolfram, Stephen Wolfram, Mathematica, 
-      computational, symbolic computation, neural networks, Ruliad, 
-      computational irreducibility, metamathematics
   
   # Scribe API settings
   scribe:
@@ -156,14 +152,12 @@ api:
 
 # Claude API Configuration
 claude:
-  model: claude-3-5-sonnet-20241022
-  maxTokens: 1500
-  temperature: 0.3
-  systemPrompt: |
-    Briefly title and summarize this voice memo transcript in a natural, concise way.
-    Focus on the main ideas and key points.
-  summaryPrompt: |
-    Provide a title and 2-3 sentence summary for this transcript.
+  # Set the Claude model used for summarization.
+  # Note: instructions.md is used for prompts; other Claude prompt fields are intentionally removed.
+  # Set to the latest Claude Sonnet 4 model
+  # Example Opus 4.1 (for future switching): claude-opus-4-1-20250805
+  # Opus 4.1 alias also exists: claude-opus-4-1
+  model: claude-sonnet-4-20250514
 
 # Logging & Monitoring
 logging:

@@ -253,3 +253,83 @@ export function validateFileSize(filePath, maxSizeMB = 1024) {
   
   return fileSizeMB;
 }
+
+/**
+ * Validate file integrity using ffprobe
+ * @param {string} filePath - Path to the file
+ * @param {string} validationLevel - Validation level: "none", "moov", "full"
+ * @returns {Promise<boolean>} - True if file is valid
+ * @throws {ValidationError} - If file is invalid or validation fails
+ */
+export async function validateFileIntegrity(filePath, validationLevel = 'moov') {
+  if (validationLevel === 'none') {
+    return true;
+  }
+
+  const { execFile } = await import('child_process');
+  const { promisify } = await import('util');
+  const execFileAsync = promisify(execFile);
+
+  try {
+    if (validationLevel === 'moov') {
+      // Quick check for moov atom presence (faster)
+      const { stdout } = await execFileAsync('ffprobe', [
+        '-v', 'quiet',
+        '-show_entries', 'format=format_name',
+        '-of', 'json',
+        filePath
+      ]);
+      
+      const probe = JSON.parse(stdout);
+      if (!probe.format || !probe.format.format_name) {
+        throw new ValidationError(
+          'File appears to be corrupted or incomplete (missing format information)',
+          'fileIntegrity'
+        );
+      }
+      
+      // For M4A files, specifically check if it's a valid container
+      if (filePath.toLowerCase().endsWith('.m4a')) {
+        if (!probe.format.format_name.includes('mov') && 
+            !probe.format.format_name.includes('mp4')) {
+          throw new ValidationError(
+            'M4A file appears to be missing moov atom or is corrupted',
+            'fileIntegrity'
+          );
+        }
+      }
+    } else if (validationLevel === 'full') {
+      // Full validation - slower but more thorough
+      await execFileAsync('ffprobe', [
+        '-v', 'error',
+        '-show_entries', 'stream=codec_type,codec_name',
+        '-of', 'json',
+        filePath
+      ]);
+    }
+    
+    return true;
+  } catch (error) {
+    if (error.stderr && error.stderr.includes('moov atom not found')) {
+      throw new ValidationError(
+        'File is incomplete or corrupted (moov atom not found)',
+        'fileIntegrity',
+        { originalError: error }
+      );
+    } else if (error.stderr && error.stderr.includes('Invalid data found')) {
+      throw new ValidationError(
+        'File contains invalid data or is corrupted',
+        'fileIntegrity',
+        { originalError: error }
+      );
+    } else if (error instanceof ValidationError) {
+      throw error;
+    } else {
+      throw new ValidationError(
+        `File validation failed: ${error.message}`,
+        'fileIntegrity',
+        { originalError: error }
+      );
+    }
+  }
+}
