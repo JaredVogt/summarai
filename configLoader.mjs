@@ -6,6 +6,12 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Track last loaded config path for diagnostics
+let lastConfigPath = null;
+export function getLastConfigPath() {
+  return lastConfigPath;
+}
+
 // We'll use a basic YAML parser to avoid adding dependencies for now
 // This is a simple YAML parser for our specific use case
 function parseSimpleYAML(yamlContent) {
@@ -356,21 +362,42 @@ function validateConfig(config) {
 export function loadConfig(configPath = null) {
   // Determine config file path
   if (!configPath) {
-    // Check if running as executable - look for config in current working directory first
-    const possiblePaths = [
-      path.join(process.cwd(), 'config.yaml'),
-      path.join(__dirname, 'config.yaml')
-    ];
-    
-    for (const p of possiblePaths) {
-      if (fs.existsSync(p)) {
-        configPath = p;
-        break;
-      }
+    // Environment variable override (supports ~ expansion)
+    const envOverride = process.env.SUMMARAI_CONFIG ? expandPath(process.env.SUMMARAI_CONFIG) : null;
+
+    // Prefer config next to the executable (when compiled), then CWD, then script dir
+    const isCompiled = (typeof BUILD_VERSION !== 'undefined');
+    const execDir = path.dirname(process.execPath || '');
+
+    const possiblePaths = [];
+
+    if (envOverride) {
+      possiblePaths.push(envOverride);
     }
-    
+
+    // New order: executable dir first (so running the binary from anywhere still picks release/config.yaml)
+    if (isCompiled && execDir) {
+      possiblePaths.push(path.join(execDir, 'config.yaml'));
+    }
+
+    // Then current working directory
+    possiblePaths.push(path.join(process.cwd(), 'config.yaml'));
+
+    // Finally, the script directory (development fallback)
+    possiblePaths.push(path.join(__dirname, 'config.yaml'));
+
+    for (const p of possiblePaths) {
+      try {
+        if (p && fs.existsSync(p)) {
+          configPath = p;
+          break;
+        }
+      } catch {}
+    }
+
+    // If nothing exists, default to the first candidate for a clearer error
     if (!configPath) {
-      configPath = possiblePaths[0]; // Default to first path for error message
+      configPath = possiblePaths[0];
     }
   }
   
@@ -380,6 +407,8 @@ export function loadConfig(configPath = null) {
   }
   
   try {
+    // Record path for diagnostics
+    lastConfigPath = configPath;
     // Read and parse YAML
     const yamlContent = fs.readFileSync(configPath, 'utf8');
     let config = parseYAML(yamlContent);

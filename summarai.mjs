@@ -83,6 +83,7 @@ import { processVoiceMemo } from './transcribe.mjs';
 import { cleanupTempDir } from './audioProcessing.mjs';
 import { loadConfig, getConfigValue, getLastConfigPath } from './configLoader.mjs';
 import logger, { LogCategory, LogStatus } from './src/logger.mjs';
+import { ValidationError } from './src/validation.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -323,6 +324,183 @@ function removeLockFile(lockPath) {
     fs.unlinkSync(lockPath);
   } catch (err) {
     // Ignore errors if file doesn't exist
+  }
+}
+
+/**
+ * Ensure the tail of a file is readable, indicating the file has fully hydrated
+ * from iCloud/Voice Memos and is not a sparse/placeholder stub.
+ * Uses sync reads for simplicity and reliability under chokidar.
+ * Throws a ValidationError('fileIntegrity') on final failure to trigger retries.
+ *
+ * Config (optional):
+ * - watch.stability.tailRead.enabled (default: true)
+ * - watch.stability.tailRead.attempts (default: 5)
+ * - watch.stability.tailRead.delayMs (default: 4000)
+ * - watch.stability.tailRead.tailBytes (default: 65536)
+ */
+async function ensureReadableTail(filePath, opts = {}) {
+  const enabled = getConfigValue(config, 'watch.stability.tailRead.enabled', true);
+  if (!enabled) return;
+
+  const attempts = getConfigValue(config, 'watch.stability.tailRead.attempts', opts.attempts || 5);
+  const delayMs = getConfigValue(config, 'watch.stability.tailRead.delayMs', opts.delayMs || 4000);
+  const tailBytes = getConfigValue(config, 'watch.stability.tailRead.tailBytes', opts.tailBytes || 65536);
+
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const fd = fs.openSync(filePath, 'r');
+      try {
+        const stats = fs.fstatSync(fd);
+        if (!stats || stats.size <= 0) {
+          throw new Error('size=0');
+        }
+        const readSize = Math.min(tailBytes, stats.size);
+        const buffer = Buffer.allocUnsafe(readSize);
+        const offset = Math.max(0, stats.size - readSize);
+        const bytesRead = fs.readSync(fd, buffer, 0, readSize, offset);
+        if (bytesRead < readSize) {
+          throw new Error(`short-read ${bytesRead}/${readSize}`);
+        }
+        // Success
+        if (i > 0) {
+          logger.info(LogCategory.WATCH, `Tail-read OK after ${i + 1} attempt(s): ${path.basename(filePath)}`);
+        } else {
+          logger.debug ? logger.debug(LogCategory.WATCH, 'Tail-read OK (first try)') : null;
+        }
+        return;
+      } finally {
+        try { fs.closeSync(fd); } catch {}
+      }
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      const isLast = i === attempts - 1;
+      if (!isLast) {
+        logger.info(
+          LogCategory.WATCH,
+          `Tail-read waiting for ${path.basename(filePath)} (${msg}). Retry ${i + 1}/${attempts} in ${Math.round(delayMs/1000)}s`
+        );
+        await new Promise(res => setTimeout(res, delayMs));
+        continue;
+      }
+
+      const vErr = new ValidationError(
+        `File tail not readable or still syncing (${msg})`,
+        'fileIntegrity'
+      );
+      // Make it match retry filter explicitly
+      vErr.code = 'fileIntegrity';
+      throw vErr;
+    }
+  }
+}
+
+/**
+ * macOS-only: Use Spotlight (mdls) to verify an iCloud-backed file is fully local.
+ * Returns when:
+ *  - File is not ubiquitous (not managed by iCloud) OR
+ *  - Download status is "Current" OR
+ *  - PercentDownloaded >= 100 AND PhysicalSize ~= LogicalSize OR
+ *  - kMDItemDownloadedDate is present
+ * On repeated failure, throws ValidationError('fileIntegrity') to trigger queue retries.
+ *
+ * Config (optional):
+ * - watch.stability.mdlsCheck.enabled (default: true on macOS)
+ * - watch.stability.mdlsCheck.attempts (default: 5)
+ * - watch.stability.mdlsCheck.delayMs (default: 3000)
+ */
+async function ensureMdlsReady(filePath, opts = {}) {
+  if (process.platform !== 'darwin') return; // Only applicable to macOS
+  const enabled = getConfigValue(config, 'watch.stability.mdlsCheck.enabled', true);
+  if (!enabled) return;
+
+  const attempts = getConfigValue(config, 'watch.stability.mdlsCheck.attempts', opts.attempts || 5);
+  const delayMs = getConfigValue(config, 'watch.stability.mdlsCheck.delayMs', opts.delayMs || 3000);
+
+  const mdlsArgs = [
+    '-name','kMDItemIsUbiquitous',
+    '-name','kMDItemUbiquitousItemDownloadingStatus',
+    '-name','kMDItemUbiquitousItemPercentDownloaded',
+    '-name','kMDItemPhysicalSize',
+    '-name','kMDItemLogicalSize',
+    '-name','kMDItemDownloadedDate',
+    filePath
+  ];
+
+  const parseLine = (line) => {
+    const idx = line.indexOf('=');
+    if (idx === -1) return [null, null];
+    const key = line.slice(0, idx).trim();
+    let val = line.slice(idx + 1).trim();
+    if (val === '(null)') return [key, null];
+    if (/^".*"$/.test(val)) val = val.slice(1, -1);
+    if (/^[0-9]+(\.[0-9]+)?$/.test(val)) val = Number(val);
+    if (val === '1') val = 1; if (val === '0') val = 0;
+    return [key, val];
+  };
+
+  const getStatusText = (vals) => {
+    const s = (vals.kMDItemUbiquitousItemDownloadingStatus || '').toString();
+    return s;
+  };
+
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+      const { stdout } = await execFileAsync('mdls', mdlsArgs);
+      const vals = {};
+      stdout.split(/\r?\n/).forEach(line => {
+        if (!line) return;
+        const [k, v] = parseLine(line);
+        if (k) vals[k] = v;
+      });
+
+      const ubiquitous = vals.kMDItemIsUbiquitous === 1 || vals.kMDItemIsUbiquitous === true;
+      if (!ubiquitous) {
+        // Not an iCloud-managed file, nothing to wait for
+        return;
+      }
+
+      const status = (vals.kMDItemUbiquitousItemDownloadingStatus || '').toString().toLowerCase();
+      const percent = Number(vals.kMDItemUbiquitousItemPercentDownloaded ?? NaN);
+      const phys = Number(vals.kMDItemPhysicalSize ?? NaN);
+      const logical = Number(vals.kMDItemLogicalSize ?? NaN);
+      const hasDownloadedDate = !!vals.kMDItemDownloadedDate;
+
+      const sizeLooksComplete = Number.isFinite(phys) && Number.isFinite(logical) && phys >= logical && logical > 0;
+
+      // Pass conditions
+      if (status === 'current' || hasDownloadedDate || (Number.isFinite(percent) && percent >= 100 && sizeLooksComplete)) {
+        if (i > 0) {
+          logger.info(LogCategory.WATCH, `mdls OK after ${i + 1} attempt(s): ${path.basename(filePath)} (status=${status || 'n/a'})`);
+        }
+        return;
+      }
+
+      // Not ready yet
+      const display = `status=${status || 'n/a'}, percent=${Number.isFinite(percent) ? percent : 'n/a'}, phys=${Number.isFinite(phys)?phys:'n/a'}, logical=${Number.isFinite(logical)?logical:'n/a'}`;
+      const isLast = i === attempts - 1;
+      if (!isLast) {
+        logger.info(LogCategory.WATCH, `iCloud syncing: ${display}. Retry ${i + 1}/${attempts} in ${Math.round(delayMs/1000)}s`);
+        await new Promise(res => setTimeout(res, delayMs));
+        continue;
+      }
+
+      const vErr = new ValidationError(`iCloud metadata indicates file not ready (${display})`, 'fileIntegrity');
+      vErr.code = 'fileIntegrity';
+      throw vErr;
+    } catch (err) {
+      // If mdls isn't available or fails unexpectedly, fall back to tail-read without blocking
+      const msg = err && err.message ? err.message : String(err);
+      // Only escalate on our own ValidationError; otherwise, break and continue pipeline
+      if (err instanceof ValidationError || (err && err.code === 'fileIntegrity')) {
+        throw err;
+      }
+      logger.warn(LogCategory.WATCH, `mdls check skipped (${msg})`);
+      return;
+    }
   }
 }
 
@@ -861,7 +1039,18 @@ async function processFile(filePath) {
   // Wait for configured delay to ensure file is fully written
   const initialDelay = getConfigValue(config, 'watch.queue.initialDelay', 5000);
   await new Promise(res => setTimeout(res, initialDelay));
-  
+  // Check if file still exists (might have been deleted/moved)
+  if (!fs.existsSync(filePath)) {
+    console.log('File no longer exists, skipping.');
+    return;
+  }
+
+  // macOS Spotlight (mdls) heuristic as a first gate for iCloud readiness
+  await ensureMdlsReady(filePath);
+
+  // Tail-read hydration/verification as second gate
+  await ensureReadableTail(filePath);
+
   // Check if file still exists (might have been deleted/moved)
   if (!fs.existsSync(filePath)) {
     console.log('File no longer exists, skipping.');

@@ -1,6 +1,6 @@
 {
   "name": "summarai",
-  "version": "2.1.0",
+  "version": "2.2.3",
   "description": "summarai - Secure audio file processor with automatic transcription and summarization",
   "main": "summarai.mjs",
   "type": "module",
@@ -9,9 +9,14 @@
     "build": "bun run build-executable.mjs",
     "build:minified": "bun run build-executable.mjs --minify",
     "build:zip": "bun run build-executable.mjs --minify --zip",
+    "build:patch": "bun run build-executable.mjs --increment --patch --minify",
+    "build:minor": "bun run build-executable.mjs --increment --minor --minify",
+    "build:major": "bun run build-executable.mjs --increment --major --minify",
+    "release": "bun run build-executable.mjs --increment --patch --minify --zip",
     "test": "bun test",
     "test:security": "bun test tests/critical-fixes.test.mjs",
-    "prebuild": "bun test"
+    "prebuild": "bun test",
+    "version": "echo $npm_package_version"
   },
   "dependencies": {
     "axios": "^1.6.0",

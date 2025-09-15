@@ -177,6 +177,12 @@ export async function processVoiceMemo(filePath, options = {}) {
     createSegmentsFile = null  // Allow override, but default to config value
   } = options;
 
+  // Always have a safe filename available for logging/error context,
+  // even if validation fails before we compute a validatedPath.
+  const safeOriginalForContext = (() => {
+    try { return path.basename(filePath || ''); } catch { return 'unknown'; }
+  })();
+
   // Get the global setting from config, with fallback to true for backward compatibility
   const globalCreateSegmentsFile = getConfigValue(config, 'fileProcessing.output.createSegmentsFile', true);
   const shouldCreateSegmentsFile = createSegmentsFile !== null ? createSegmentsFile : globalCreateSegmentsFile;
@@ -434,7 +440,8 @@ export async function processVoiceMemo(filePath, options = {}) {
     if (usedTemp) cleanupTempDir(tempDir);
 
     // Handle different types of errors appropriately
-    const context = `processVoiceMemo(${originalFileName})`;
+    // Use a precomputed, safe fallback so we don't throw ReferenceError
+    const context = `processVoiceMemo(${safeOriginalForContext})`;
 
     if (error.code === 'ENOENT') {
       throw new FileSystemError('File not found', 'read', filePath, { originalError: error });

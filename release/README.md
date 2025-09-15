@@ -118,8 +118,8 @@ Contains domain-specific terms and terminology that helps both transcription ser
 
 ## Version Info
 - Version: 2.2.3
-- Build Date: 2025-09-06
-- Build Time: 2025-09-06T08:16:59.834Z
+- Build Date: 2025-09-15
+- Build Time: 2025-09-15T20:49:06.222Z
 - Platform: macOS ARM64 (Apple Silicon)
 - Runtime: Bun (embedded)
 

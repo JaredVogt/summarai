@@ -261,6 +261,24 @@ node modelChecker.mjs
 node modelChecker.mjs claude-opus-4-20250101
 ```
 
+### Switching Models
+Set the Claude model in `config.yaml` under the `claude.model` key.
+
+```yaml
+# config.yaml
+claude:
+  # Choose one of the following model IDs:
+  # - Latest Sonnet 4: claude-sonnet-4-20250514
+  # - Latest Opus 4:   claude-opus-4-20250514
+  # - Opus 4.1 (newer lineage): claude-opus-4-1-20250805
+  #   Alias also available:      claude-opus-4-1
+  model: claude-sonnet-4-20250514
+```
+
+- To switch, replace the `model` value and save the file.
+- The built-in checker logs when newer Sonnet/Opus versions are available, but it does not auto-update your config.
+- You can run `node modelChecker.mjs` anytime to see what’s current.
+
 ## 🧩 Advanced Configuration Options
 
 ### Watch Behavior

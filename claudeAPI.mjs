@@ -6,11 +6,20 @@ import { startSpinner, sanitizeFilename } from './utils.mjs';
 import { retryWithBackoff, defaultShouldRetry } from './retryUtils.mjs';
 import { checkForNewerModels } from './modelChecker.mjs';
 import logger, { LogCategory, LogStatus } from './src/logger.mjs';
+import { loadConfig, getConfigValue } from './configLoader.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Don't read the API key at import time, will access process.env directly when needed
+
+// Load configuration for runtime model selection (best-effort)
+let runtimeConfig = null;
+try {
+  runtimeConfig = loadConfig();
+} catch (error) {
+  logger.warn(LogCategory.CONFIG, `Could not load config for Claude model selection: ${error.message}`);
+}
 
 // Default embedded content for fallback when external files don't exist
 const DEFAULT_INSTRUCTIONS = `# Instructions for Anthropic Claude
@@ -194,8 +203,16 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
       }
     };
 
+    // Model selection: prefer config value, fallback to a recent default
+    let currentModel = 'claude-opus-4-20250514';
+    try {
+      const configuredModel = runtimeConfig ? getConfigValue(runtimeConfig, 'claude.model', null) : null;
+      if (configuredModel && typeof configuredModel === 'string') {
+        currentModel = configuredModel;
+      }
+    } catch {}
+
     // Check for newer models (non-blocking)
-    const currentModel = 'claude-opus-4-20250514';
     checkForNewerModels(currentModel).catch(err => {
       // Don't let model checking errors interrupt the main flow
       logger.warn(LogCategory.MODEL, `Error checking for newer models: ${err.message}`);
