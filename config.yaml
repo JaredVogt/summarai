@@ -52,7 +52,7 @@ fileProcessing:
   # Process history tracking
   history:
     enabled: true
-    file: ./process_history.json
+    file: ./processed_log.ndjson
 
   # Output file settings
   output:
@@ -109,6 +109,12 @@ audio:
     enabled: true
     maxSizeMB: 22               # Maximum size before splitting
     chunkPrefix: chunk_         # Prefix for chunk files
+
+# Processing Configuration
+processing:
+  # Transcription segmentation settings
+  sentence_pause_threshold: 0.8  # seconds - gap between words to split segments
+  max_words_per_segment: 50      # maximum words per segment to prevent overly long segments
 
 # Transcription Services Configuration
 transcription:

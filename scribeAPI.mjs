@@ -212,50 +212,15 @@ export async function transcribeWithScribe(audioFilePath, options = {}) {
  */
 function formatScribeResult(result, verbose = false) {
   // Extract the plain text (different path with the SDK)
-  const text = result.transcription || result.text || '';
-  
-  // Process words and segments for timestamps if available
-  let segments = [];
-  let lastSpeaker = null;
-  let currentSegment = null;
+  const rawText = result.transcription || result.text || '';
+  // Clean up extra spaces
+  const text = rawText.replace(/\s+/g, ' ').trim();
 
   // Get words array from SDK response (structure might be different)
   const words = result.words || [];
-  
-  // Process words to create segments similar to Whisper format
-  if (words && Array.isArray(words)) {
-    words.forEach((word, index) => {
-      // Check if this is a new speaker or first word
-      const speakerId = word.speaker_id || word.speakerId;
-      
-      if (speakerId !== lastSpeaker || !currentSegment) {
-        // Save previous segment if exists
-        if (currentSegment) {
-          segments.push(currentSegment);
-        }
-        
-        // Start new segment
-        currentSegment = {
-          id: segments.length,
-          start: word.start || 0,
-          end: word.end || 0,
-          text: word.text || '',
-          speaker: speakerId !== undefined ? `Speaker ${speakerId}` : undefined
-        };
-        
-        lastSpeaker = speakerId;
-      } else {
-        // Append to current segment
-        currentSegment.text += ' ' + (word.text || '');
-        currentSegment.end = word.end || 0;
-      }
-      
-      // Add the last segment
-      if (index === words.length - 1 && currentSegment) {
-        segments.push(currentSegment);
-      }
-    });
-  }
+
+  // Use sentence-based segmentation instead of speaker-based
+  const segments = createSentenceSegments(words);
 
   // Create a formatted result compatible with our application
   const formatted = {
@@ -277,8 +242,63 @@ function formatScribeResult(result, verbose = false) {
 }
 
 /**
+ * Create sentence-based segments from word-level timestamps
+ * @param {Array} words - Words array from API response
+ * @returns {Array} - Array of sentence segments
+ */
+function createSentenceSegments(words) {
+  if (!words || words.length === 0) return [];
+
+  const segments = [];
+  let sentenceBuffer = [];
+
+  words.forEach((word, index) => {
+    sentenceBuffer.push(word);
+
+    // Check if word ends with sentence punctuation
+    const isEndOfSentence = /[.!?]$/.test(word.text);
+
+    // Check for natural pauses (configurable gap to next word)
+    const pauseThreshold = getConfigValue(config, 'processing.sentence_pause_threshold', 0.8);
+    const hasLongPause = index < words.length - 1 &&
+      (words[index + 1].start - word.end) > pauseThreshold;
+
+    // Safety limit to prevent overly long segments
+    const maxWordsPerSegment = getConfigValue(config, 'processing.max_words_per_segment', 50);
+    const tooLong = sentenceBuffer.length > maxWordsPerSegment;
+
+    // Last word in the entire transcript
+    const isLastWord = index === words.length - 1;
+
+    if (isEndOfSentence || hasLongPause || tooLong || isLastWord) {
+      if (sentenceBuffer.length > 0) {
+        // Create segment from buffered words
+        const speakerId = sentenceBuffer[0].speaker_id !== undefined ?
+          sentenceBuffer[0].speaker_id : sentenceBuffer[0].speakerId;
+
+        // Extract numeric part from speaker ID (e.g., "speaker_0" -> "0")
+        const speakerNum = speakerId !== undefined ?
+          speakerId.toString().replace(/^speaker_/, '') : '0';
+
+        segments.push({
+          id: segments.length,
+          start: sentenceBuffer[0].start || 0,
+          end: sentenceBuffer[sentenceBuffer.length - 1].end || 0,
+          text: sentenceBuffer.map(w => w.text.trim()).join(' '),
+          speaker: `Speaker ${speakerNum}`
+        });
+
+        sentenceBuffer = [];
+      }
+    }
+  });
+
+  return segments;
+}
+
+/**
  * Extract unique speakers from transcription
- * @param {Array} words - Words array from API response  
+ * @param {Array} words - Words array from API response
  * @returns {Array} - Unique speaker IDs
  */
 function extractSpeakers(words) {
