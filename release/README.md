@@ -4,6 +4,8 @@
 
 This is a standalone executable version of summarai for macOS ARM64 (Apple Silicon).
 
+**Latest Update (v2.2.4)**: Enhanced transcript formatting with intelligent sentence segmentation, natural pause detection, and configurable processing thresholds for cleaner, more readable transcripts.
+
 ### First Run on macOS
 
 When running this executable for the first time, macOS will show a security warning:
@@ -118,8 +120,8 @@ Contains domain-specific terms and terminology that helps both transcription ser
 
 ## Version Info
 - Version: 2.2.3
-- Build Date: 2025-09-15
-- Build Time: 2025-09-15T20:49:06.222Z
+- Build Date: 2025-09-16
+- Build Time: 2025-09-16T01:22:10.018Z
 - Platform: macOS ARM64 (Apple Silicon)
 - Runtime: Bun (embedded)
 

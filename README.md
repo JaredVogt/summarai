@@ -10,6 +10,7 @@ A comprehensive system for automatically processing voice memos and audio/video 
 - **Audio Optimization**: Always compresses files to optimized AAC format (configurable bitrate/sample rate) using ffmpeg
 - **Video Support**: Automatic audio extraction from video files (MP4, MOV, AVI, MKV, WebM)
 - **Multiple Transcription Services**: ElevenLabs Scribe (default) or OpenAI Whisper support
+- **Intelligent Transcript Formatting**: Advanced sentence-based segmentation with punctuation detection, natural pause recognition, and configurable thresholds for cleaner, more readable transcripts
 - **AI Summarization**: Claude-powered markdown summaries with configurable prompts
 
 ### Intelligent Organization  
@@ -151,6 +152,12 @@ transcription:
     model: whisper-1
     language: null  # auto-detect
 
+# Processing Configuration
+processing:
+  # Transcript formatting settings
+  sentence_pause_threshold: 0.8  # seconds - gap between words to split segments
+  max_words_per_segment: 50      # maximum words per segment
+
 # Audio Processing
 audio:
   compression:
@@ -174,6 +181,33 @@ export PROCESSVM_DIRECTORIES_VOICEMEMOS="/custom/voice/memos/path"
 export PROCESSVM_TRANSCRIPTION_DEFAULTSERVICE="whisper"
 export PROCESSVM_AUDIO_PROCESSING_SPEEDADJUSTMENT="1.0"
 ```
+
+## 🧾 Processed Files Log (NDJSON)
+
+- Location: configured at `fileProcessing.history.file` (default `./processed_log.ndjson`).
+- Format: append-only NDJSON (one JSON object per line). Safer than an in-memory JSON array and robust to crashes.
+- Dedup key: the original, date-stamped filename. We check by `sourceName` (the basename of the source file). Destination names are never used for dedup.
+- Also tracked for audit/debug: `sourcePath` (absolute path), destination path(s), sizes, and service/model.
+
+Fields per record:
+- `processedAt` (ISO string)
+- `sourcePath` (absolute path including original filename)
+- `sourceName` (original basename; used for dedup checks)
+- `destAudioPath` (nullable; final audio location if the file was moved, e.g., Google Drive flow)
+- `outputMdPath` (nullable; path to the generated markdown summary)
+- `service` (e.g., `scribe` or `whisper`)
+- `model` (e.g., `scribe_v1`, `whisper-1`)
+- `sizeSourceBytes` (integer)
+- `sizeDestBytes` (integer, nullable)
+
+Example line:
+```
+{"processedAt":"2025-09-16T18:01:23Z","sourcePath":"/Users/me/Drive/unprocessed/VM-20250916_175959.m4a","sourceName":"VM-20250916_175959.m4a","destAudioPath":"/Users/me/Drive/processed/2025-09-16-180123.m4a","outputMdPath":"/Users/me/VMs/2025-09-16-180123.md","service":"scribe","model":"scribe_v1","sizeSourceBytes":12345678,"sizeDestBytes":4567890}
+```
+
+Migration from legacy JSON array:
+- If `processed_log.ndjson` does not exist but a legacy `process_history.json` is found, it is migrated automatically on first read.
+- Legacy entries become NDJSON rows with `sourceName` and `processedAt`; other fields are null.
 
 ### Customization Files
 - **`keywords.txt`**: Controls output directory routing logic

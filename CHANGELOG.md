@@ -2,6 +2,33 @@
 
 All notable changes to the Voice Memo Processing & Transcription Workflow project are documented in this file.
 
+## [2.2.4] - 2025-09-20 - Enhanced Transcript Formatting
+
+### 🎯 Transcript Quality Improvements
+- **Intelligent Sentence Segmentation**: Replaced simple speaker-based segmentation with advanced sentence-based formatting
+- **Natural Pause Detection**: Configurable pause threshold (0.8s default) for detecting natural speech breaks
+- **Punctuation-Based Boundaries**: Automatic sentence detection using punctuation patterns (.!?)
+- **Text Cleaning**: Enhanced whitespace normalization and word trimming for cleaner output
+- **Configurable Limits**: Maximum words per segment (50 default) to prevent overly long segments
+
+### 🔧 Configuration Enhancements
+- **New Processing Section**: Added `processing.sentence_pause_threshold` and `processing.max_words_per_segment` configuration options
+- **Improved Readability**: Maintains speaker identification while optimizing for natural reading flow
+- **Backward Compatibility**: All existing configurations remain functional
+
+### 📈 Benefits
+- More natural reading flow with proper sentence boundaries
+- Consistent spacing and punctuation handling
+- Better speaker attribution without losing readability
+- Configurable segmentation for different use cases
+
+### 🔄 Technical Changes
+- Enhanced `formatScribeResult()` function with `createSentenceSegments()` logic
+- Integrated yt2s project's advanced formatting capabilities
+- Preserved all existing API compatibility and verbose mode support
+
+---
+
 ## [2.1.0] - 2025-09-05 - Security & Reliability Overhaul
 
 ### 🔒 Major Security Improvements
