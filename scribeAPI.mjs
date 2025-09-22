@@ -5,6 +5,7 @@ import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
 import { retryWithBackoff, defaultShouldRetry } from './retryUtils.mjs';
 import { loadConfig, getConfigValue } from './configLoader.mjs';
 import logger, { LogCategory, LogStatus } from './src/logger.mjs';
+import { checkAndLogSubscription } from './elevenLabsMonitor.mjs';
 
 // Don't read the API key at import time, will access process.env directly when needed
 
@@ -26,10 +27,13 @@ try {
 export async function transcribeWithScribe(audioFilePath, options = {}) {
   // Get API key at runtime, after dotenv has loaded it
   const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-  
+
   if (!ELEVENLABS_API_KEY) {
     throw new Error('ELEVENLABS_API_KEY not set');
   }
+
+  // Check and log subscription status before transcription
+  await checkAndLogSubscription(ELEVENLABS_API_KEY, options.verbose);
 
   // Get default values from config if available
   const configDefaults = config ? {
