@@ -288,7 +288,7 @@ function createSentenceSegments(words) {
           id: segments.length,
           start: sentenceBuffer[0].start || 0,
           end: sentenceBuffer[sentenceBuffer.length - 1].end || 0,
-          text: sentenceBuffer.map(w => w.text.trim()).join(' '),
+          text: sentenceBuffer.map(w => w.text).join('').trim(),
           speaker: `Speaker ${speakerNum}`
         });
 
