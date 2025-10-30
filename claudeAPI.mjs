@@ -157,14 +157,15 @@ function getContentTypeFromPath(filePath) {
 /**
  * Sends transcript to Claude for summarization and processing
  * @param {string} transcript - Transcript text to send
- * @param {string} filePath - Path to original file (audio or video)
+ * @param {string} filePath - Path to original file (audio or video) - used for metadata/display
  * @param {string} recordingDateTimePrefix - Formatted date/time prefix
  * @param {string} recordingDateTime - ISO formatted date/time
  * @param {string} outputDir - Base output directory
  * @param {string} originalFileName - Original filename to preserve date prefix from
+ * @param {string} filePathToCopy - Actual file path to copy (defaults to filePath) - use for compressed/processed files
  * @returns {Promise<Object>} - Result with finalName, targetDir, and mdFilePath
  */
-export async function sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, outputDir, originalFileName = null) {
+export async function sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, outputDir, originalFileName = null, filePathToCopy = null) {
   // Get API key at runtime, after dotenv has loaded it
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
   
@@ -365,16 +366,25 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
     claudeText.trim() +
     `\n\nOriginal ${getContentTypeFromPath(filePath)} file: "${displayAudioPath}"\nRecording date/time: ${recordingDateTime}\n`
   );
-  // Determine the file extension of the original file
-  const sourceExt = path.extname(filePath);
+  // Determine the file extension and path to copy
+  // Use filePathToCopy if provided (for compressed/processed files), otherwise use original filePath
+  const actualFilePath = filePathToCopy || filePath;
+  const sourceExt = path.extname(actualFilePath);
   const destPath = path.join(targetDir, `${finalName}${sourceExt}`);
-  
+
   try {
-    fs.copyFileSync(filePath, destPath);
-    logger.success(LogCategory.PROCESSING, `Claude output written to: ${mdFile}`);
-    logger.success(LogCategory.FILE, `Original ${getContentTypeFromPath(filePath)} file copied to: ${destPath}`);
+    // Verify the source file exists before attempting to copy
+    if (!fs.existsSync(actualFilePath)) {
+      logger.failure(LogCategory.FILE, `Source file not found: ${actualFilePath}`);
+      logger.info(LogCategory.FILE, `Original path was: ${filePath}`);
+    } else {
+      fs.copyFileSync(actualFilePath, destPath);
+      logger.success(LogCategory.PROCESSING, `Claude output written to: ${mdFile}`);
+      logger.success(LogCategory.FILE, `${getContentTypeFromPath(filePath)} file copied to: ${destPath}`);
+    }
   } catch (error) {
-    logger.failure(LogCategory.FILE, `Error copying original file: ${error.message}`);
+    logger.failure(LogCategory.FILE, `Error copying file: ${error.message}`);
+    logger.debug(LogCategory.FILE, `Attempted to copy from: ${actualFilePath}`);
   }
   return { finalName, targetDir, mdFilePath: mdFile };
 }

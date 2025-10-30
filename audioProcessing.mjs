@@ -187,20 +187,35 @@ export async function convertToTempAAC(inputPath, tempDir, { forceAudioExtractio
       console.log(`Processing audio file (${lowQuality ? 'low' : 'normal'} quality)...`);
     }
 
-    await secureFFmpegCall(ffmpegArgs, `Processing ${isVideo ? 'video' : 'audio'} file`);
+    const result = await secureFFmpegCall(ffmpegArgs, `Processing ${isVideo ? 'video' : 'audio'} file`);
     stopSpinner(); // Stop the spinner animation when done
+
+    // Validate that output file was created
+    if (!fs.existsSync(tempAAC)) {
+      throw new Error(`Conversion failed: output file not found at ${tempAAC}. FFmpeg stderr: ${result.stderr}`);
+    }
+
+    // Check if output file has reasonable size (> 0 bytes)
+    const stats = fs.statSync(tempAAC);
+    if (stats.size === 0) {
+      throw new Error(`Conversion failed: output file is empty (0 bytes). FFmpeg stderr: ${result.stderr}`);
+    }
+
+    console.log(`Converted file size: ${(stats.size / (1024 * 1024)).toFixed(2)} MB`);
   } catch (error) {
     stopSpinner(); // Make sure to stop the spinner even if there's an error
+
+    // Clean up any partial output file
+    if (fs.existsSync(tempAAC)) {
+      try {
+        fs.unlinkSync(tempAAC);
+      } catch (cleanupError) {
+        console.warn(`Warning: Could not clean up partial output file: ${cleanupError.message}`);
+      }
+    }
+
     console.error(`Error processing ${fileType} file:`, error.message);
     throw new Error(`Failed to process ${fileType} file: ${error.message}`);
-  }
-  
-  // Log out the resulting file size
-  if (fs.existsSync(tempAAC)) {
-    const stats = fs.statSync(tempAAC);
-    console.log(`Converted file size: ${(stats.size / (1024 * 1024)).toFixed(2)} MB`);
-  } else {
-    throw new Error('Conversion failed: output file not found');
   }
   
   return tempAAC;

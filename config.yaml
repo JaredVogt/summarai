@@ -160,10 +160,10 @@ api:
 claude:
   # Set the Claude model used for summarization.
   # Note: instructions.md is used for prompts; other Claude prompt fields are intentionally removed.
-  # Set to the latest Claude Sonnet 4 model
+  # Set to the latest Claude Sonnet 4.5 model
   # Example Opus 4.1 (for future switching): claude-opus-4-1-20250805
   # Opus 4.1 alias also exists: claude-opus-4-1
-  model: claude-sonnet-4-20250514
+  model: claude-sonnet-4-5-20250929
 
 # Logging & Monitoring
 logging:

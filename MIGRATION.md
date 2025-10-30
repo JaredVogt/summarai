@@ -77,7 +77,7 @@ node -e "import('./configLoader.mjs').then(({loadConfig}) => {try {console.log('
 node transcribe.mjs --file /path/to/test-audio.m4a
 
 # Test file watching (Ctrl+C to stop after a few seconds)
-node watchDirectories.mjs
+summarai
 ```
 
 ## 📋 Complete Migration Reference

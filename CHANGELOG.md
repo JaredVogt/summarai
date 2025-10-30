@@ -145,7 +145,7 @@ All notable changes to the Voice Memo Processing & Transcription Workflow projec
 ## [1.6.0] - 2025-07-01 - Major Refactor with Reliability Improvements
 
 ### 🎉 Major Features
-- **Automatic File Watching**: New `watchDirectories.mjs` for hands-free processing
+- **Automatic File Watching**: New `summarai` command (formerly watchDirectories.mjs) for hands-free processing
   - Monitors Apple Voice Memos and Google Drive directories
   - `--cleanout` mode to process existing files before watching
   - Automatic file movement to processed folders

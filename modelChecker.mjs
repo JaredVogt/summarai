@@ -37,6 +37,8 @@ function parseModelsFromHtml(html) {
   const models = {
     opus4: null,
     sonnet4: null,
+    sonnet45: null,
+    haiku4: null,
     timestamp: Date.now()
   };
 
@@ -49,12 +51,28 @@ function parseModelsFromHtml(html) {
       models.opus4 = opus4Matches.sort().reverse()[0];
     }
 
+    // Look for Sonnet 4.5 model identifier pattern
+    const sonnet45Pattern = /claude-sonnet-4-5-\d{8}/g;
+    const sonnet45Matches = html.match(sonnet45Pattern);
+    if (sonnet45Matches && sonnet45Matches.length > 0) {
+      // Get the most recent (assuming format is YYYYMMDD)
+      models.sonnet45 = sonnet45Matches.sort().reverse()[0];
+    }
+
     // Look for Sonnet 4 model identifier pattern
     const sonnet4Pattern = /claude-sonnet-4-\d{8}/g;
     const sonnet4Matches = html.match(sonnet4Pattern);
     if (sonnet4Matches && sonnet4Matches.length > 0) {
       // Get the most recent (assuming format is YYYYMMDD)
       models.sonnet4 = sonnet4Matches.sort().reverse()[0];
+    }
+
+    // Look for Haiku 4 model identifier pattern
+    const haiku4Pattern = /claude-haiku-4-\d{8}/g;
+    const haiku4Matches = html.match(haiku4Pattern);
+    if (haiku4Matches && haiku4Matches.length > 0) {
+      // Get the most recent (assuming format is YYYYMMDD)
+      models.haiku4 = haiku4Matches.sort().reverse()[0];
     }
 
     // Also check for any alias patterns like claude-opus-4-0
@@ -209,7 +227,8 @@ export async function checkForNewerModels(currentModel, silent = false) {
   };
 
   // Extract model type and date from current model
-  const modelMatch = currentModel.match(/(claude-(?:opus|sonnet)-4)-(\d{8})/);
+  // Support both Sonnet 4 and Sonnet 4.5 formats
+  const modelMatch = currentModel.match(/(claude-(?:opus|sonnet(?:-4-5)?)-4)-(\d{8})/);
   if (!modelMatch) {
     if (!silent) {
       // Import logger here to avoid circular dependencies
@@ -220,7 +239,7 @@ export async function checkForNewerModels(currentModel, silent = false) {
   }
 
   const [_, modelType, currentDate] = modelMatch;
-  
+
   // Check if newer version exists
   if (modelType === 'claude-opus-4' && models.opus4) {
     const latestDate = models.opus4.match(/\d{8}/)?.[0];
@@ -230,6 +249,16 @@ export async function checkForNewerModels(currentModel, silent = false) {
         type: 'opus4',
         current: currentModel,
         latest: models.opus4
+      });
+    }
+  } else if (modelType === 'claude-sonnet-4-5-4' && models.sonnet45) {
+    const latestDate = models.sonnet45.match(/\d{8}/)?.[0];
+    if (latestDate && latestDate > currentDate) {
+      results.hasNewer = true;
+      results.newerModels.push({
+        type: 'sonnet45',
+        current: currentModel,
+        latest: models.sonnet45
       });
     }
   } else if (modelType === 'claude-sonnet-4' && models.sonnet4) {

@@ -43,7 +43,7 @@ function getVersionInfo() {
 // Show help immediately if requested, before any imports
 if (showHelp) {
   logger.raw(`
-Usage: node watchDirectories.mjs [options]
+Usage: summarai [options]
 
 Options:
   --cleanout                        Process all existing files in Google Drive unprocessed folder before watching
@@ -63,12 +63,12 @@ Files from Google Drive are moved to processed folder after successful processin
 Voice Memos files are never moved.
 
 Examples:
-  node watchDirectories.mjs --process-recent-vm                       # Process Voice Memos from last 120 days
-  node watchDirectories.mjs --process-recent-vm --dry-run             # See what would be processed (last 120 days)
-  node watchDirectories.mjs --process-recent-vm 7-1-25                # Process from July 1, 2025 to now
-  node watchDirectories.mjs --process-recent-vm 4-1-25:5-31-25        # Process from April 1 to May 31, 2025
-  node watchDirectories.mjs --process-recent-vm 7-1-25 --dry-run      # Dry run from July 1, 2025 to now
-  node watchDirectories.mjs --cleanout                                # Process Google Drive files then watch
+  summarai --process-recent-vm                       # Process Voice Memos from last 120 days
+  summarai --process-recent-vm --dry-run             # See what would be processed (last 120 days)
+  summarai --process-recent-vm 7-1-25                # Process from July 1, 2025 to now
+  summarai --process-recent-vm 4-1-25:5-31-25        # Process from April 1 to May 31, 2025
+  summarai --process-recent-vm 7-1-25 --dry-run      # Dry run from July 1, 2025 to now
+  summarai --cleanout                                # Process Google Drive files then watch
   `);
   process.exit(0);
 }
@@ -83,6 +83,7 @@ import { processVoiceMemo } from './transcribe.mjs';
 import { cleanupTempDir } from './audioProcessing.mjs';
 import { loadConfig, getConfigValue, getLastConfigPath } from './configLoader.mjs';
 import logger, { LogCategory, LogStatus } from './src/logger.mjs';
+import { appendRecord, appendFailureRecord, loadIndex } from './src/processHistory.mjs';
 import { ValidationError } from './src/validation.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -205,7 +206,7 @@ if (processRecentVmIndex !== -1) {
 // Show help if requested
 if (showHelp) {
   console.log(`
-Usage: node watchDirectories.mjs [options]
+Usage: summarai [options]
 
 Options:
   --cleanout                        Process all existing files in Google Drive unprocessed folder before watching
@@ -224,12 +225,12 @@ Files from Google Drive are moved to processed folder after successful processin
 Voice Memos files are never moved.
 
 Examples:
-  node watchDirectories.mjs --process-recent-vm                       # Process Voice Memos from last 120 days
-  node watchDirectories.mjs --process-recent-vm --dry-run             # See what would be processed (last 120 days)
-  node watchDirectories.mjs --process-recent-vm 7-1-25                # Process from July 1, 2025 to now
-  node watchDirectories.mjs --process-recent-vm 4-1-25:5-31-25        # Process from April 1 to May 31, 2025
-  node watchDirectories.mjs --process-recent-vm 7-1-25 --dry-run      # Dry run from July 1, 2025 to now
-  node watchDirectories.mjs --cleanout                                # Process Google Drive files then watch
+  summarai --process-recent-vm                       # Process Voice Memos from last 120 days
+  summarai --process-recent-vm --dry-run             # See what would be processed (last 120 days)
+  summarai --process-recent-vm 7-1-25                # Process from July 1, 2025 to now
+  summarai --process-recent-vm 4-1-25:5-31-25        # Process from April 1 to May 31, 2025
+  summarai --process-recent-vm 7-1-25 --dry-run      # Dry run from July 1, 2025 to now
+  summarai --cleanout                                # Process Google Drive files then watch
   `);
   process.exit(0);
 }
@@ -324,6 +325,93 @@ function removeLockFile(lockPath) {
     fs.unlinkSync(lockPath);
   } catch (err) {
     // Ignore errors if file doesn't exist
+  }
+}
+
+/**
+ * Clean up orphaned lock files on startup
+ * Removes all .processing lock files from watched directories
+ */
+function cleanupOrphanedLocks() {
+  logger.section('Cleaning up orphaned lock files');
+
+  const configs = loadDirectoryConfigs();
+  let cleanedCount = 0;
+
+  for (const dirConfig of configs) {
+    if (!dirConfig.enabled) continue;
+
+    const watchPath = dirConfig.watchPath;
+    if (!fs.existsSync(watchPath)) continue;
+
+    try {
+      // Find all .processing files in the watched directory
+      const files = fs.readdirSync(watchPath);
+      for (const file of files) {
+        if (file.endsWith('.processing')) {
+          const lockPath = path.join(watchPath, file);
+          try {
+            fs.unlinkSync(lockPath);
+            cleanedCount++;
+            logger.info(LogCategory.PROCESSING, `Removed orphaned lock: ${file}`);
+          } catch (err) {
+            logger.warning(LogCategory.PROCESSING, `Failed to remove lock ${file}: ${err.message}`);
+          }
+        }
+      }
+    } catch (err) {
+      logger.warning(LogCategory.PROCESSING, `Error scanning ${dirConfig.name}: ${err.message}`);
+    }
+  }
+
+  if (cleanedCount > 0) {
+    logger.success(LogCategory.PROCESSING, `Cleaned up ${cleanedCount} orphaned lock file(s)`);
+  } else {
+    logger.info(LogCategory.PROCESSING, 'No orphaned lock files found');
+  }
+}
+
+/**
+ * Recover previously failed files on startup
+ * Loads failed files from history and adds them back to the processing queue
+ */
+function recoverFailedFiles() {
+  logger.section('Recovering previously failed files');
+
+  const { failedFiles } = loadIndex(config);
+
+  if (failedFiles.size === 0) {
+    logger.info(LogCategory.PROCESSING, 'No previously failed files to recover');
+    return;
+  }
+
+  let recoveredCount = 0;
+  let skippedCount = 0;
+
+  for (const [filePath, failureInfo] of failedFiles) {
+    // Check if file still exists
+    if (!fs.existsSync(filePath)) {
+      logger.info(LogCategory.PROCESSING, `Skipping missing file: ${failureInfo.sourceName}`);
+      skippedCount++;
+      continue;
+    }
+
+    // Add to processing queue
+    addToQueue(filePath);
+    recoveredCount++;
+
+    const errorMsg = failureInfo.error?.message || 'Unknown error';
+    logger.info(LogCategory.PROCESSING,
+      `Queued for retry: ${failureInfo.sourceName} (last error: ${errorMsg})`);
+  }
+
+  if (recoveredCount > 0) {
+    logger.success(LogCategory.PROCESSING,
+      `Queued ${recoveredCount} failed file(s) for retry`);
+  }
+  if (skippedCount > 0) {
+    logger.info(LogCategory.PROCESSING,
+      `Skipped ${skippedCount} missing file(s)`);
   }
 }
 
@@ -512,13 +600,23 @@ async function ensureMdlsReady(filePath, opts = {}) {
  * @param {string} tempDir - Temporary directory to clean up
  * @param {string} processedDir - Directory to move processed files to
  */
-async function moveToProcessed(originalPath, compressedPath, generatedName, tempDir, processedDir) {
+async function moveToProcessed(originalPath, compressedPath, generatedName, tempDir, processedDir, meta = {}) {
   try {
+    // Validate inputs
+    if (!compressedPath || !fs.existsSync(compressedPath)) {
+      throw new Error(`Compressed file not found: ${compressedPath}`);
+    }
+
+    if (!processedDir) {
+      throw new Error('Processed directory path is required');
+    }
+
     // Ensure processed directory exists
     if (!fs.existsSync(processedDir)) {
       fs.mkdirSync(processedDir, { recursive: true });
+      console.log(`Created processed directory: ${processedDir}`);
     }
-    
+
     // Determine appropriate file extension
     // If compressed path is same as original, no compression occurred - preserve extension
     let newFilename;
@@ -532,6 +630,11 @@ async function moveToProcessed(originalPath, compressedPath, generatedName, temp
       console.log(`Compression detected, using .m4a extension`);
     }
     const newPath = path.join(processedDir, newFilename);
+
+    // Check if destination already exists
+    if (fs.existsSync(newPath)) {
+      console.warn(`Destination file already exists, will overwrite: ${newPath}`);
+    }
     
     // Get file sizes for logging
     let originalStats, compressedStats, originalSizeMB, compressedSizeMB, compressionRatio;
@@ -562,8 +665,16 @@ async function moveToProcessed(originalPath, compressedPath, generatedName, temp
     console.log(`  Destination: ${newFilename}`);
     
     // Move the compressed file
-    fs.renameSync(compressedPath, newPath);
-    console.log(`✓ Compressed file moved to: ${newPath}`);
+    try {
+      fs.renameSync(compressedPath, newPath);
+      console.log(`✓ Compressed file moved to: ${newPath}`);
+    } catch (moveError) {
+      // If rename fails (e.g., cross-device), try copy then delete
+      console.warn(`Rename failed (${moveError.message}), trying copy and delete...`);
+      fs.copyFileSync(compressedPath, newPath);
+      fs.unlinkSync(compressedPath);
+      console.log(`✓ Compressed file copied and original deleted: ${newPath}`);
+    }
     
     // Delete the original large file if it exists and is different from compressed file
     if (originalPath !== compressedPath && fs.existsSync(originalPath)) {
@@ -584,6 +695,20 @@ async function moveToProcessed(originalPath, compressedPath, generatedName, temp
     } else {
       console.log(`✓ Successfully processed and moved to: ${newPath}`);
     }
+    try {
+      // Append NDJSON record including destination path
+      appendRecord(config, {
+        processedAt: new Date().toISOString(),
+        sourcePath: path.isAbsolute(originalPath) ? originalPath : path.resolve(originalPath),
+        sourceName: path.basename(originalPath),
+        destAudioPath: newPath,
+        outputMdPath: meta.outputMdPath || null,
+        service: meta.service || null,
+        model: meta.model || null,
+        sizeSourceBytes: originalStats ? originalStats.size : null,
+        sizeDestBytes: compressedStats ? compressedStats.size : null
+      });
+    } catch {}
     return newPath;
   } catch (err) {
     console.error(`Error moving file to processed: ${err.message}`);
@@ -599,46 +724,72 @@ async function moveToProcessed(originalPath, compressedPath, generatedName, temp
 function scheduleRetry(filePath, error) {
   const maxAttempts = getConfigValue(config, 'watch.validation.retries.maxAttempts', 3);
   const retryDelays = getConfigValue(config, 'watch.validation.retries.delays', [5000, 15000, 30000]);
-  
+
   const currentAttempt = retryCount.get(filePath) || 0;
   const nextAttempt = currentAttempt + 1;
-  
+
   if (nextAttempt >= maxAttempts) {
-    logger.failure(LogCategory.QUEUE, 
+    logger.failure(LogCategory.QUEUE,
       `File ${path.basename(filePath)} failed after ${maxAttempts} attempts, giving up: ${error.message}`
     );
+
+    // Persist failure to history
+    appendFailureRecord(config, {
+      sourcePath: filePath,
+      attemptNumber: maxAttempts,
+      error: {
+        type: error.name || 'Error',
+        message: error.message || 'Unknown error',
+        code: error.code || null,
+        service: null // Will be populated if available from error context
+      }
+    });
+
     retryCount.delete(filePath);
     return;
   }
-  
+
   const delay = retryDelays[nextAttempt - 1] || retryDelays[retryDelays.length - 1] || 30000;
   retryCount.set(filePath, nextAttempt);
-  
+
   // Check if error is retryable
-  const isRetryable = error.name === 'ValidationError' && 
-    (error.code === 'fileIntegrity' || 
+  const isRetryable = error.name === 'ValidationError' &&
+    (error.code === 'fileIntegrity' ||
      error.message.includes('moov atom') ||
      error.message.includes('corrupted') ||
      error.message.includes('incomplete'));
-  
+
   if (!isRetryable) {
-    logger.failure(LogCategory.QUEUE, 
+    logger.failure(LogCategory.QUEUE,
       `File ${path.basename(filePath)} failed with non-retryable error: ${error.message}`
     );
+
+    // Persist failure to history
+    appendFailureRecord(config, {
+      sourcePath: filePath,
+      attemptNumber: nextAttempt,
+      error: {
+        type: error.name || 'Error',
+        message: error.message || 'Unknown error',
+        code: error.code || null,
+        service: null
+      }
+    });
+
     retryCount.delete(filePath);
     return;
   }
-  
-  logger.info(LogCategory.QUEUE, 
+
+  logger.info(LogCategory.QUEUE,
     `Scheduling retry ${nextAttempt}/${maxAttempts} for ${path.basename(filePath)} in ${delay/1000}s`
   );
-  
+
   const timeoutId = setTimeout(() => {
     retryTimeouts.delete(filePath);
     processingQueue.push(filePath);
     processQueue();
   }, delay);
-  
+
   retryTimeouts.set(filePath, timeoutId);
 }
 
@@ -804,21 +955,7 @@ function parseDateRange(dateRangeValue) {
   }
 }
 
-/**
- * Get processed filenames from process_history.json
- */
-function getProcessedFilenames() {
-  const historyFile = getConfigValue(config, 'fileProcessing.history.file', './process_history.json');
-  const historyPath = path.isAbsolute(historyFile) ? historyFile : path.join(__dirname, historyFile);
-  if (!fs.existsSync(historyPath)) return new Set();
-  try {
-    const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
-    if (!Array.isArray(history)) return new Set();
-    return new Set(history.map(entry => entry.filename));
-  } catch {
-    return new Set();
-  }
-}
+// History is loaded via NDJSON (see src/processHistory.mjs)
 
 /**
  * Process unprocessed Voice Memos from a specified date range
@@ -867,8 +1004,8 @@ async function processRecentVoiceMemos(startDate, endDate, dryRun = false) {
       return;
     }
     
-    // Get processed filenames from history
-    const processedFilenames = getProcessedFilenames();
+    // Get processed filenames from history (original basenames)
+    const { bySourceName: processedFilenames } = loadIndex(config);
     
     // Separate processed and unprocessed files
     const processedFiles = [];
@@ -1093,12 +1230,25 @@ async function processFile(filePath) {
     if (dirConfig.moveAfterProcessing && result && result.finalName) {
       if (result.compressedPath) {
         // Move compressed file and delete original
-        await moveToProcessed(filePath, result.compressedPath, result.finalName, 
-                             result.tempDir, dirConfig.processedPath);
+        await moveToProcessed(
+          filePath,
+          result.compressedPath,
+          result.finalName,
+          result.tempDir,
+          dirConfig.processedPath,
+          { service: processingOptions.transcriptionService, model: processingOptions.model, outputMdPath: result.mdFilePath }
+        );
       } else {
         // Fallback to old behavior if no compressed path
         console.warn('No compressed path returned, falling back to moving original file');
-        await moveToProcessed(filePath, filePath, result.finalName, null, dirConfig.processedPath);
+        await moveToProcessed(
+          filePath,
+          filePath,
+          result.finalName,
+          null,
+          dirConfig.processedPath,
+          { service: processingOptions.transcriptionService, model: processingOptions.model, outputMdPath: result.mdFilePath }
+        );
       }
     }
     
@@ -1106,6 +1256,8 @@ async function processFile(filePath) {
     logger.failure(LogCategory.PROCESSING, `Error processing file: ${err.message}`);
     // Remove from processed set so it can be retried
     processed.delete(filePath);
+    // Re-throw so processQueue() can handle retry logic
+    throw err;
   } finally {
     // Always remove lock file
     removeLockFile(lock);
@@ -1209,6 +1361,12 @@ async function validateDirectories() {
 
 // Run special modes if requested
 async function startWatching() {
+  // Clean up orphaned lock files from previous runs
+  cleanupOrphanedLocks();
+
+  // Recover previously failed files and add them to the queue
+  recoverFailedFiles();
+
   // Validate directories and get list to watch
   const dirsToWatch = await validateDirectories();
   

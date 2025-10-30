@@ -17,6 +17,7 @@ import { transcribeWithScribe, createSegmentsContent } from './scribeAPI.mjs';
 import { convertToTempAAC, cleanupTempDir, splitAudioFile } from './audioProcessing.mjs';
 import { startSpinner, sanitizeFilename } from './utils.mjs';
 import { loadConfig, getConfigValue } from './configLoader.mjs';
+import { appendRecord, loadIndex } from './src/processHistory.mjs';
 import {
   ProcessingError,
   FileSystemError,
@@ -46,50 +47,7 @@ try {
 
 const OUTPUT_DIR = getConfigValue(config, 'directories.output', './output');
 
-// Helper to get processed filenames from configured history file
-function getProcessedFilenames() {
-  const historyFile = getConfigValue(config, 'fileProcessing.history.file', './process_history.json');
-  const historyPath = path.isAbsolute(historyFile) ? historyFile : historyFile;
-  if (!fs.existsSync(historyPath)) return new Set();
-  try {
-    const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
-    if (!Array.isArray(history)) return new Set();
-    return new Set(history.map(entry => entry.filename));
-  } catch {
-    return new Set();
-  }
-}
-
-// Helper to add processed file to configured history file
-function addToProcessHistory(filename, timestamp) {
-  const historyFile = getConfigValue(config, 'fileProcessing.history.file', './process_history.json');
-  const historyPath = path.isAbsolute(historyFile) ? historyFile : historyFile;
-  
-  // Check if directory is writable
-  try {
-    fs.accessSync(path.dirname(historyPath), fs.constants.W_OK);
-  } catch (error) {
-    console.error(`Error: Directory is not writable: ${path.dirname(historyPath)}`);
-    console.error(`Permission error: ${error.message}`);
-    return; // Exit function if directory is not writable
-  }
-  
-  let history = [];
-  if (fs.existsSync(historyPath)) {
-    try {
-      history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
-      if (!Array.isArray(history)) history = [];
-    } catch {
-      history = [];
-    }
-  }
-  history.push({ filename, timestamp });
-  try {
-    fs.writeFileSync(historyPath, JSON.stringify(history, null, 2));
-  } catch (error) {
-    console.error(`Error writing to process_history.json: ${error.message}`);
-  }
-}
+// History is now tracked via NDJSON (see src/processHistory.mjs)
 
 async function transcribeLatestVoiceMemo(transcriptionService) {
   const rl = readline.createInterface({ input, output });
@@ -109,8 +67,8 @@ async function transcribeLatestVoiceMemo(transcriptionService) {
     rl.close();
     return;
   }
-  // Get processed filenames
-  const processed = getProcessedFilenames();
+  // Get processed filenames (original basenames)
+  const { bySourceName: processed } = loadIndex(config);
   logger.info(LogCategory.PROCESSING, 'Recent Voice Memos:');
   for (let i = 0; i < files.length; i++) {
     const { file, duration, date, gps } = files[i];
@@ -188,6 +146,7 @@ export async function processVoiceMemo(filePath, options = {}) {
   const shouldCreateSegmentsFile = createSegmentsFile !== null ? createSegmentsFile : globalCreateSegmentsFile;
 
   let usedTemp = false; // Initialize outside try block for error handling
+  let tempDir; // Initialize outside try block for error handling
 
   // Debug Google Drive flag
   if (fromGoogleDrive) {
@@ -233,16 +192,43 @@ export async function processVoiceMemo(filePath, options = {}) {
     let recordingDateTimePrefix = null;
 
     // Try to extract date/time from filename pattern (common for voice memos)
-    const dtMatch = originalFileName.match(/(\d{8})[ _-](\d{6})/);
+    // Support both YYYYMMDD_HHMMSS and YYMMDD_HHMM formats
+    let dtMatch = originalFileName.match(/(\d{8})[ _-](\d{6})/); // YYYYMMDD_HHMMSS
+    let isShortFormat = false;
+
+    if (!dtMatch) {
+      dtMatch = originalFileName.match(/(\d{6})[ _-](\d{4})/); // YYMMDD_HHMM
+      isShortFormat = true;
+    }
+
     if (dtMatch) {
-      const [_, ymd, hms] = dtMatch;
-      recordingDateTimePrefix = `${ymd}_${hms}`;
-      const year = ymd.slice(0, 4);
-      const month = ymd.slice(4, 6);
-      const day = ymd.slice(6, 8);
-      const hour = hms.slice(0, 2);
-      const min = hms.slice(2, 4);
-      const sec = hms.slice(4, 6);
+      const [_, dateStr, timeStr] = dtMatch;
+
+      let year, month, day, hour, min, sec;
+
+      if (isShortFormat) {
+        // YYMMDD_HHMM format
+        const yyStr = dateStr.slice(0, 2);
+        month = dateStr.slice(2, 4);
+        day = dateStr.slice(4, 6);
+        hour = timeStr.slice(0, 2);
+        min = timeStr.slice(2, 4);
+        sec = '00'; // Default to 00 seconds
+
+        // Convert 2-digit year to 4-digit (assuming 20XX for now)
+        const yy = parseInt(yyStr, 10);
+        year = yy < 50 ? `20${yyStr}` : `19${yyStr}`;
+      } else {
+        // YYYYMMDD_HHMMSS format
+        year = dateStr.slice(0, 4);
+        month = dateStr.slice(4, 6);
+        day = dateStr.slice(6, 8);
+        hour = timeStr.slice(0, 2);
+        min = timeStr.slice(2, 4);
+        sec = timeStr.slice(4, 6);
+      }
+
+      recordingDateTimePrefix = `${year}${month}${day}_${hour}${min}${sec}`;
       recordingDateTime = `${year}-${month}-${day}T${hour}:${min}:${sec}-07:00`;
     } else {
       // For files without timestamp in name, get the current time
@@ -261,7 +247,11 @@ export async function processVoiceMemo(filePath, options = {}) {
     }
 
     // Always convert to temp AAC
-    const tempDir = path.join(path.dirname(filePath), 'temp');
+    // For Google Drive files, use a temp directory that can be accessed later
+    tempDir = fromGoogleDrive
+      ? path.join(path.dirname(filePath), 'temp')
+      : path.join(os.tmpdir(), 'summarai_temp', path.basename(filePath, path.extname(filePath)));
+
     const tempAACPath = await convertToTempAAC(filePath, tempDir, {
       forceAudioExtraction: forceVideoMode,
       lowQuality: lowQuality
@@ -277,6 +267,7 @@ export async function processVoiceMemo(filePath, options = {}) {
     let transcriptionData;
     let transcript;
     let segmentsContent;
+    let usedModel = null;
     
     if (transcriptionService === 'whisper') {
       // Whisper has a 25MB file size limit
@@ -299,6 +290,8 @@ export async function processVoiceMemo(filePath, options = {}) {
       
       // Extract the text transcript from the response
       transcript = transcriptionData.text;
+      // Record model used for logging
+      usedModel = getConfigValue(config, 'transcription.whisper.model', 'whisper-1');
       
       // Create a timestamped segments text with lowercase heading
       segmentsContent = "## transcription with timestamps\n";
@@ -386,6 +379,8 @@ export async function processVoiceMemo(filePath, options = {}) {
       
       // Create segments content using the helper function
       segmentsContent = createSegmentsContent(transcriptionData);
+      // Record model used for logging
+      usedModel = selectedModel;
     }
     
     // Don't print the full transcript to console to reduce output verbosity
@@ -394,8 +389,8 @@ export async function processVoiceMemo(filePath, options = {}) {
     logger.info(LogCategory.PROCESSING, `Transcript length: ${transcript.length} characters, ${transcript.split(/\s+/).length} words`);
   
     // Send to Claude and write output (markdown + audio)
-    // Pass the original .m4a path, not the temp AAC
-    const { finalName, targetDir, mdFilePath } = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, outputPath || OUTPUT_DIR, originalFileName);
+    // Pass the original filePath for metadata, but tempAACPath for copying the actual file
+    const { finalName, targetDir, mdFilePath } = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, outputPath || OUTPUT_DIR, originalFileName, tempAACPath);
     
     // Write segments to a file (only if enabled by config or override)
     if (shouldCreateSegmentsFile) {
@@ -410,18 +405,42 @@ export async function processVoiceMemo(filePath, options = {}) {
       console.log(`Timestamps appended to markdown file: ${mdFilePath}`);
     }
   
-    // Add to process_history.json in root
-    addToProcessHistory(originalFileName, recordingDateTime || new Date().toISOString());
+    // Append NDJSON record for processed file (source-based)
+    try {
+      const sourceStats = fs.statSync(validatedPath);
+      appendRecord(config, {
+        processedAt: recordingDateTime || new Date().toISOString(),
+        sourcePath: validatedPath,
+        sourceName: originalFileName,
+        destAudioPath: null,
+        outputMdPath: mdFilePath || null,
+        service: transcriptionService,
+        model: usedModel,
+        sizeSourceBytes: sourceStats?.size ?? null,
+        sizeDestBytes: null
+      });
+    } catch {}
     
     // If from Google Drive, return the compressed file path for moving
     if (fromGoogleDrive && usedTemp) {
+      // Validate that the compressed file exists before returning it
+      if (!fs.existsSync(tempAACPath)) {
+        logger.failure(LogCategory.PROCESSING, `Compressed file not found at expected path: ${tempAACPath}`);
+        throw new ProcessingError(
+          `Google Drive file processing failed: compressed file not found`,
+          { filePath, tempAACPath }
+        );
+      }
+
       logger.info(LogCategory.PROCESSING, `Google Drive file processed: returning compressed path for moving`);
       logger.debug(LogCategory.PROCESSING, `Compressed AAC path: ${tempAACPath}`);
-      return { 
-        finalName, 
-        targetDir, 
-        transcript, 
+
+      return {
+        finalName,
+        targetDir,
+        transcript,
         segmentsContent,
+        mdFilePath,
         compressedPath: tempAACPath,
         tempDir: tempDir // Return tempDir so caller can clean it up after moving
       };
@@ -433,7 +452,7 @@ export async function processVoiceMemo(filePath, options = {}) {
         logger.warning(LogCategory.PROCESSING, `Google Drive file but no temp used - compression may have failed`);
       }
       if (usedTemp) cleanupTempDir(tempDir);
-      return { finalName, targetDir, transcript, segmentsContent };
+      return { finalName, targetDir, transcript, segmentsContent, mdFilePath };
     }
   } catch (error) {
     // Always clean up on error
@@ -590,8 +609,8 @@ Examples:
  */
 async function getLatestUnprocessedVoiceMemo() {
   try {
-    // Get processed filenames
-    const processed = getProcessedFilenames();
+  // Get processed filenames
+  const { bySourceName: processed } = loadIndex(config);
     
     // Get recent voice memos (up to 100 as requested by user)
     const files = await getLatestVoiceMemos(100);
@@ -643,8 +662,8 @@ async function processInSilentMode(filePath) {
   }
 }
 
-// Run if called directly (but not when imported by watchDirectories or running in executable)
-// Also check that we're not running as part of summarai.mjs
+// Run if called directly (but not when imported by summarai or running in executable)
+// Check for both 'watchDirectories' (backwards compatibility) and 'summarai' (current name)
 if (import.meta.url === `file://${process.argv[1]}` &&
     !process.argv[1]?.includes('watchDirectories') &&
     !process.argv[1]?.includes('summarai') &&
