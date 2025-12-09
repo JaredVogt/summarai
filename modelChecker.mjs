@@ -36,6 +36,7 @@ let memoryCache = null;
 function parseModelsFromHtml(html) {
   const models = {
     opus4: null,
+    opus45: null,
     sonnet4: null,
     sonnet45: null,
     haiku4: null,
@@ -49,6 +50,14 @@ function parseModelsFromHtml(html) {
     if (opus4Matches && opus4Matches.length > 0) {
       // Get the most recent (assuming format is YYYYMMDD)
       models.opus4 = opus4Matches.sort().reverse()[0];
+    }
+
+    // Look for Opus 4.5 model identifier pattern
+    const opus45Pattern = /claude-opus-4-5-\d{8}/g;
+    const opus45Matches = html.match(opus45Pattern);
+    if (opus45Matches && opus45Matches.length > 0) {
+      // Get the most recent (assuming format is YYYYMMDD)
+      models.opus45 = opus45Matches.sort().reverse()[0];
     }
 
     // Look for Sonnet 4.5 model identifier pattern
@@ -206,7 +215,10 @@ export async function fetchLatestModels(forceRefresh = false) {
     // Return empty models if no cache
     return {
       opus4: null,
+      opus45: null,
       sonnet4: null,
+      sonnet45: null,
+      haiku4: null,
       timestamp: Date.now()
     };
   }
@@ -227,8 +239,9 @@ export async function checkForNewerModels(currentModel, silent = false) {
   };
 
   // Extract model type and date from current model
-  // Support both Sonnet 4 and Sonnet 4.5 formats
-  const modelMatch = currentModel.match(/(claude-(?:opus|sonnet(?:-4-5)?)-4)-(\d{8})/);
+  // Support Opus 4, Opus 4.5, Sonnet 4, and Sonnet 4.5 formats
+  // Model formats: claude-opus-4-YYYYMMDD, claude-opus-4-5-YYYYMMDD, etc.
+  const modelMatch = currentModel.match(/(claude-(?:opus|sonnet)-4(?:-5)?)-(\d{8})/);
   if (!modelMatch) {
     if (!silent) {
       // Import logger here to avoid circular dependencies
@@ -240,35 +253,33 @@ export async function checkForNewerModels(currentModel, silent = false) {
 
   const [_, modelType, currentDate] = modelMatch;
 
-  // Check if newer version exists
-  if (modelType === 'claude-opus-4' && models.opus4) {
-    const latestDate = models.opus4.match(/\d{8}/)?.[0];
+  // Check if newer version exists based on model type
+  // modelType will be: claude-opus-4, claude-opus-4-5, claude-sonnet-4, claude-sonnet-4-5
+  let latestModel = null;
+  let modelTypeKey = null;
+
+  if (modelType === 'claude-opus-4') {
+    latestModel = models.opus4;
+    modelTypeKey = 'opus4';
+  } else if (modelType === 'claude-opus-4-5') {
+    latestModel = models.opus45;
+    modelTypeKey = 'opus45';
+  } else if (modelType === 'claude-sonnet-4-5') {
+    latestModel = models.sonnet45;
+    modelTypeKey = 'sonnet45';
+  } else if (modelType === 'claude-sonnet-4') {
+    latestModel = models.sonnet4;
+    modelTypeKey = 'sonnet4';
+  }
+
+  if (latestModel) {
+    const latestDate = latestModel.match(/\d{8}/)?.[0];
     if (latestDate && latestDate > currentDate) {
       results.hasNewer = true;
       results.newerModels.push({
-        type: 'opus4',
+        type: modelTypeKey,
         current: currentModel,
-        latest: models.opus4
-      });
-    }
-  } else if (modelType === 'claude-sonnet-4-5-4' && models.sonnet45) {
-    const latestDate = models.sonnet45.match(/\d{8}/)?.[0];
-    if (latestDate && latestDate > currentDate) {
-      results.hasNewer = true;
-      results.newerModels.push({
-        type: 'sonnet45',
-        current: currentModel,
-        latest: models.sonnet45
-      });
-    }
-  } else if (modelType === 'claude-sonnet-4' && models.sonnet4) {
-    const latestDate = models.sonnet4.match(/\d{8}/)?.[0];
-    if (latestDate && latestDate > currentDate) {
-      results.hasNewer = true;
-      results.newerModels.push({
-        type: 'sonnet4',
-        current: currentModel,
-        latest: models.sonnet4
+        latest: latestModel
       });
     }
   }
@@ -288,10 +299,16 @@ export async function checkForNewerModels(currentModel, silent = false) {
   }
 
   // Also show other available models if different type
-  if (!silent && models.opus4 && !currentModel.includes('opus')) {
+  if (!silent && models.opus45 && !currentModel.includes('opus-4-5')) {
+    logger.info(LogCategory.MODEL, `Opus 4.5 available: ${models.opus45}`);
+  }
+  if (!silent && models.opus4 && !currentModel.includes('claude-opus-4-') && !currentModel.includes('opus-4-5')) {
     logger.info(LogCategory.MODEL, `Opus 4 available: ${models.opus4}`);
   }
-  if (!silent && models.sonnet4 && !currentModel.includes('sonnet')) {
+  if (!silent && models.sonnet45 && !currentModel.includes('sonnet-4-5')) {
+    logger.info(LogCategory.MODEL, `Sonnet 4.5 available: ${models.sonnet45}`);
+  }
+  if (!silent && models.sonnet4 && !currentModel.includes('claude-sonnet-4-') && !currentModel.includes('sonnet-4-5')) {
     logger.info(LogCategory.MODEL, `Sonnet 4 available: ${models.sonnet4}`);
   }
 

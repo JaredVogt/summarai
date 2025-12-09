@@ -21,11 +21,14 @@ A comprehensive system for automatically processing voice memos and audio/video 
 
 ### Automation & Reliability
 - **Automatic File Watching**: Monitors Voice Memos and Google Drive directories for new files
-- **Retry Logic**: Exponential backoff for API reliability and error recovery
+- **Persistent Failure Tracking**: Failed files logged to NDJSON with automatic recovery on startup
+- **Auto-Recovery System**: Orphaned lock file cleanup and failed file queue restoration
+- **Retry Logic**: Exponential backoff for API reliability and configurable retry attempts (default: 3)
 - **Silent Mode**: Fully automated processing without user interaction
 - **Date Range Processing**: Flexible processing of Voice Memos from specific date ranges
 - **Lock File System**: Prevents concurrent processing of the same file
-- **Process History**: Tracks processed files to avoid duplicates
+- **Process History**: Tracks processed files to avoid duplicates with detailed metadata
+- **iCloud File Validation**: Advanced readiness detection using `mdls` metadata and tail-read verification
 
 ### Security & Validation
 - **Input Validation**: Comprehensive validation of all user inputs and file paths
@@ -125,11 +128,27 @@ The system uses a comprehensive YAML configuration file that controls all aspect
 ```yaml
 # Directory Configuration
 directories:
-  voiceMemos: ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings
-  googleDrive:
-    unprocessed: ~/path/to/unprocessed
-    processed: ~/path/to/processed
-  output: ~/path/to/output
+  # Watch directories with per-directory settings
+  watch:
+    voiceMemos:
+      name: "Voice Memos"
+      path: ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings
+      enabled: true
+      moveAfterProcessing: false    # Keep files in place after processing
+      outputPath: ~/path/to/output  # Where to save transcripts
+      transcriptionService: scribe  # Service to use for this directory
+      compress: true                # Compress audio files
+
+    googleDrive:
+      name: "Google Drive Unprocessed"
+      path: ~/path/to/unprocessed
+      enabled: true
+      moveAfterProcessing: true     # Move processed files
+      processedPath: ~/path/to/processed  # Where to move processed audio
+      outputPath: ~/path/to/output  # Where to save transcripts
+      transcriptionService: scribe  # Service for this directory
+      compress: true
+
   temp: ./temp
 
 # File Processing
@@ -137,6 +156,8 @@ fileProcessing:
   supportedExtensions:
     audio: [.m4a, .mp3, .wav, .ogg, .flac]
     video: [.mp4, .mov, .avi, .mkv, .webm]
+  output:
+    createSegmentsFile: false  # Toggle separate .txt transcript files
   ignore:
     patterns: [temp*, chunk_*, "*.processing"]
 
@@ -144,7 +165,7 @@ fileProcessing:
 transcription:
   defaultService: scribe  # or whisper
   scribe:
-    model: scribe_v1
+    model: scribe_v1_experimental  # or scribe_v1
     language: eng
     diarize: true
     tagAudioEvents: true
@@ -165,12 +186,16 @@ audio:
       bitrate: 48k
       sampleRate: 16000
     low:
-      bitrate: 24k  
+      bitrate: 24k
       sampleRate: 8000
   processing:
     speedAdjustment: 1.5
     codec: aac
     channels: 1
+
+# Claude Configuration
+claude:
+  model: claude-sonnet-4-5-20250929  # Latest Sonnet 4.5
 ```
 
 ### Environment Variable Overrides
@@ -216,7 +241,7 @@ Migration from legacy JSON array:
 
 ## 📋 Requirements
 
-- **Node.js** v18+ recommended
+- **Node.js** v18+ or **Bun** runtime
 - **ffmpeg** installed and available in PATH
 - **API keys** for the services you want to use (Anthropic, ElevenLabs, OpenAI)
 
@@ -229,8 +254,15 @@ Migration from legacy JSON array:
    ```
 
 2. **Install dependencies**
+
+   Using npm:
    ```bash
    npm install
+   ```
+
+   Or using Bun (faster, recommended):
+   ```bash
+   bun install
    ```
 
 3. **Set up configuration**
@@ -281,7 +313,7 @@ The system automatically falls back to environment variables if configuration ca
 
 The system automatically monitors for newer Claude model versions:
 
-- **Automatic Checking**: Checks Anthropic documentation for latest Opus 4 and Sonnet 4 models
+- **Automatic Checking**: Checks Anthropic documentation for latest Opus 4/4.5 and Sonnet 4/4.5 models
 - **Smart Caching**: Results cached for 24 hours to minimize API requests  
 - **Non-blocking**: Runs asynchronously without affecting transcription speed
 - **Configurable Model**: Set your preferred model in the configuration
@@ -302,57 +334,156 @@ Set the Claude model in `config.yaml` under the `claude.model` key.
 # config.yaml
 claude:
   # Choose one of the following model IDs:
-  # - Latest Sonnet 4: claude-sonnet-4-20250514
-  # - Latest Opus 4:   claude-opus-4-20250514
-  # - Opus 4.1 (newer lineage): claude-opus-4-1-20250805
-  #   Alias also available:      claude-opus-4-1
-  model: claude-sonnet-4-20250514
+  # - Latest Opus 4.5:   claude-opus-4-5-20251101 (most capable)
+  # - Latest Sonnet 4.5: claude-sonnet-4-5-20250929 (current default)
+  # - Latest Sonnet 4:   claude-sonnet-4-20250514
+  # - Latest Opus 4:     claude-opus-4-20250514
+  model: claude-sonnet-4-5-20250929
 ```
 
 - To switch, replace the `model` value and save the file.
 - The built-in checker logs when newer Sonnet/Opus versions are available, but it does not auto-update your config.
-- You can run `node modelChecker.mjs` anytime to see what’s current.
+- You can run `node modelChecker.mjs` anytime to see what's current.
+
+## 📊 ElevenLabs Subscription Monitoring
+
+The system includes real-time monitoring of your ElevenLabs API usage when using Scribe transcription:
+
+### Features
+- **Live Character Tracking**: Displays current usage vs. subscription limits
+- **Visual Status Indicators**:
+  - 🟢 Green: Under 50% usage
+  - 🟡 Yellow: 50-80% usage
+  - 🔴 Red: Over 80% usage
+- **Reset Time Display**: Shows when your quota resets
+- **Automatic Updates**: Refreshes usage data during transcription
+
+### Example Output
+```
+ElevenLabs Subscription Status:
+🟢 Characters used: 45,230 / 100,000 (45.2%)
+⏰ Resets in: 12 days, 3 hours
+```
+
+### Warnings
+The system will warn you when approaching limits:
+- **80% usage**: Yellow warning with remaining characters
+- **90% usage**: Red warning suggesting usage review
+- **95%+ usage**: Critical warning - consider upgrading or waiting for reset
+
+### Manual Check
+```bash
+# Check subscription status anytime
+node elevenLabsMonitor.mjs
+```
 
 ## 🧩 Advanced Configuration Options
+
+### Per-Directory Configuration
+
+Each watch directory can have independent settings:
+
+```yaml
+directories:
+  watch:
+    voiceMemos:
+      name: "Voice Memos"
+      path: ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings
+      enabled: true                  # Enable/disable watching this directory
+      moveAfterProcessing: false     # Keep files in original location
+      outputPath: ~/Obsidian/VMs     # Where to save transcripts
+      transcriptionService: scribe   # Use ElevenLabs for this directory
+      compress: true                 # Compress audio files
+
+    googleDrive:
+      name: "Google Drive"
+      path: ~/GoogleDrive/unprocessed
+      enabled: true
+      moveAfterProcessing: true      # Move files after processing
+      processedPath: ~/GoogleDrive/processed  # Destination for processed audio
+      outputPath: ~/Obsidian/VMs
+      transcriptionService: whisper  # Use OpenAI Whisper for this directory
+      compress: false                # Keep original quality
+```
+
+**Use Cases:**
+- Different transcription services for different audio sources
+- Separate quality settings (compress personal memos, keep work recordings at full quality)
+- Different output destinations (personal vs. work content)
+- Mix of move and keep-in-place behaviors
 
 ### Watch Behavior
 ```yaml
 watch:
-  enabled:
-    voiceMemos: true
-    googleDrive: true
+  # Initial processing on startup
   initialProcessing:
-    cleanout: false
-    processRecentVm: false
-    defaultDateRange: 120  # days
+    cleanout: false              # Process all existing files
+    processRecentVm: false       # Process recent voice memos
+    defaultDateRange: 120        # Days to look back
+
+  # File stability detection
   stability:
-    threshold: 2000  # ms to wait for file stability
-    pollInterval: 100
+    threshold: 2000              # ms to wait for file stability
+    pollInterval: 100            # ms between stability checks
+    tailRead: true               # Verify file is fully readable
+    mdlsCheck: true              # Use macOS metadata checks (iCloud)
+
+  # File validation
+  validation:
+    enabled: true                # Enable file integrity checks
+    level: standard              # Options: basic, standard, thorough
+    retries: 3                   # Retry attempts for failed validation
+
+  # Queue processing
+  queue:
+    delayBetweenFiles: 2000      # ms delay between files
+    initialDelay: 5000           # ms before processing new file
 ```
 
-### API Configuration  
+### API Configuration
 ```yaml
 api:
   retry:
-    maxRetries: 3
-    baseDelay: 1000
-    maxDelay: 30000
+    maxRetries: 3                # Max retry attempts
+    baseDelay: 1000              # Initial delay (ms)
+    maxDelay: 30000              # Maximum delay (ms)
+    retryDelays: [5000, 15000, 30000]  # Specific delays for each retry
+
   timeouts:
-    scribe: 300
-    claude: 120
-    whisper: 180
+    scribe: 300                  # ElevenLabs timeout (seconds)
+    claude: 120                  # Claude API timeout
+    whisper: 180                 # OpenAI Whisper timeout
 ```
 
 ### Processing Modes
 ```yaml
 modes:
   silent:
-    enabled: false
-    suppressOutput: true
-    autoConfirm: true
+    enabled: false               # Silent mode by default
+    suppressOutput: true         # Hide console output
+    autoConfirm: true            # Auto-confirm prompts
+
   dryRun:
-    enabled: false
-    showActions: true
+    enabled: false               # Dry run mode
+    showActions: true            # Show planned actions
+```
+
+### File Processing Options
+```yaml
+fileProcessing:
+  output:
+    createSegmentsFile: false    # Create separate .txt transcript files
+                                 # Set to true for .txt files, false for .md only
+
+  history:
+    enabled: true                # Track processed files
+    file: ./processed_log.ndjson # NDJSON log file path
+
+  ignore:
+    patterns:
+      - temp*                    # Ignore temp files
+      - chunk_*                  # Ignore chunks
+      - "*.processing"           # Ignore lock files
 ```
 
 ## 🎯 Output Directory Logic
@@ -361,6 +492,69 @@ modes:
 - **Keyword match**: Files → `output/[first-matching-keyword]/`
 - **No duplicates**: Files only written to one location
 - **Batch consistency**: All related files (.md, .m4a, .txt) go to same directory
+
+## 📝 Advanced Transcript Formatting
+
+The system uses intelligent sentence-based segmentation to create clean, readable transcripts optimized for AI processing and human readability.
+
+### How It Works
+
+**Segmentation Algorithm:**
+1. **Sentence Boundary Detection**: Splits on punctuation (`.!?`) at word endings
+2. **Natural Pause Recognition**: Detects speech gaps exceeding the threshold (default: 0.8s)
+3. **Length Management**: Prevents overly long segments (default: 50 words max)
+4. **Text Normalization**: Cleans whitespace with `replace(/\s+/g, ' ').trim()` for consistent formatting
+
+**Speaker Handling:**
+- Extracts numeric IDs from "speaker_0" format
+- Formats as "Speaker 0", "Speaker 1", etc.
+- Preserves speaker identity across segment boundaries
+
+### Configuration
+
+```yaml
+processing:
+  # Gap between words to trigger segment split
+  sentence_pause_threshold: 0.8  # seconds (default: 0.8)
+
+  # Maximum words per segment
+  max_words_per_segment: 50      # words (default: 50)
+```
+
+### Benefits
+
+**For AI Processing:**
+- Natural reading flow improves Claude's comprehension
+- Consistent formatting aids pattern recognition
+- Cleaner text reduces parsing overhead
+- Proper sentence boundaries improve summarization quality
+
+**For Human Readers:**
+- Easy-to-read segments with natural breaks
+- Speaker identification at each segment
+- Logical grouping of related thoughts
+- Reduced wall-of-text effect
+
+### Example Output
+
+**Before (raw):**
+```
+Speaker 0: So I've been thinking about the project and I think we should probably consider changing the architecture maybe we could use a microservices approach what do you think?
+```
+
+**After (formatted):**
+```
+Speaker 0: So I've been thinking about the project and I think we should probably consider changing the architecture.
+
+Speaker 0: Maybe we could use a microservices approach. What do you think?
+```
+
+### Tuning Parameters
+
+- **Lower threshold (e.g., 0.5s)**: More aggressive splitting, shorter segments
+- **Higher threshold (e.g., 1.2s)**: Longer segments, fewer breaks
+- **Lower max words (e.g., 30)**: Forces shorter segments for rapid speech
+- **Higher max words (e.g., 75)**: Allows longer thoughts to stay together
 
 ## 🔧 Troubleshooting
 
@@ -375,9 +569,74 @@ node -e "import('./configLoader.mjs').then(({loadConfig}) => console.log(JSON.st
 
 ### Common Issues
 - **"Configuration file not found"**: Ensure `config.yaml` exists in project root
-- **"Invalid YAML"**: Check YAML syntax, especially array formatting with `- ` 
+- **"Invalid YAML"**: Check YAML syntax, especially array formatting with `- `
 - **"Directory not found"**: Update directory paths in `config.yaml` to match your system
 - **API errors**: Verify API keys are correctly set in `~/.env`
+
+### iCloud File Issues
+If files from iCloud Drive aren't processing correctly:
+
+1. **Check file readiness**: The system uses `mdls` to verify files are fully downloaded
+2. **Verify download status**: Look for log messages about file hydration
+3. **Wait for sync**: Files may show in Finder but not be physically downloaded yet
+4. **Manual check**: Run `mdls <file>` to see metadata - `kMDItemLogicalSize` should match physical size
+
+The system automatically:
+- Validates files using macOS metadata before processing
+- Performs tail-read verification to ensure full file availability
+- Retries with configurable delays if files aren't ready
+- Skips iCloud validation on non-macOS systems
+
+## 🔄 Failure Recovery & Reliability
+
+### Automatic Recovery System
+The system includes comprehensive failure tracking and auto-recovery:
+
+**On Startup:**
+- Detects and cleans up orphaned `.processing` lock files from interrupted sessions
+- Restores failed files queue from `processed_log.ndjson`
+- Automatically retries previously failed files
+
+**During Processing:**
+- Logs all failures to NDJSON with error details and retry count
+- Uses exponential backoff for transient errors (5s, 15s, 30s delays)
+- Maximum 3 retry attempts per file (configurable)
+- Preserves original files on failure
+
+**Viewing Failed Files:**
+```bash
+# Check for failed files in the log
+grep '"error"' processed_log.ndjson
+
+# Count failures
+grep '"error"' processed_log.ndjson | wc -l
+```
+
+### Process History
+All processing attempts (successful and failed) are logged to `processed_log.ndjson`:
+
+**Success Record:**
+```json
+{
+  "processedAt": "2025-01-23T18:01:23Z",
+  "sourcePath": "/path/to/VM-20250123.m4a",
+  "sourceName": "VM-20250123.m4a",
+  "service": "scribe",
+  "model": "scribe_v1_experimental",
+  "sizeSourceBytes": 12345678
+}
+```
+
+**Failure Record:**
+```json
+{
+  "processedAt": "2025-01-23T18:01:23Z",
+  "sourcePath": "/path/to/VM-20250123.m4a",
+  "sourceName": "VM-20250123.m4a",
+  "error": "Transcription failed: API timeout",
+  "retryCount": 2
+}
+```
 
 ## 🔌 Hardware Integration
 
@@ -431,6 +690,68 @@ bun test-critical-fixes.mjs
 - **Security Tests**: Path traversal protection, command injection prevention
 - **Integration Tests**: End-to-end workflows and error scenarios
 
+## 🚢 Build & Deployment
+
+The system includes comprehensive build tooling for creating standalone executables:
+
+### Build Commands
+
+```bash
+# Basic build (creates executable)
+npm run build
+
+# Build with minification
+npm run build:minified
+
+# Build, minify, and create zip archive
+npm run build:zip
+
+# Version bump + build (patch: 1.0.0 → 1.0.1)
+npm run build:patch
+
+# Minor version bump (1.0.0 → 1.1.0)
+npm run build:minor
+
+# Major version bump (1.0.0 → 2.0.0)
+npm run build:major
+
+# Quick release (patch bump + minify + zip)
+npm run release
+```
+
+### Version Management
+
+**Check current version:**
+```bash
+npm run version
+# Or use the CLI flag:
+node summarai.mjs --version
+```
+
+**Build process includes:**
+- Automatic version incrementing (when using `--increment` flags)
+- Running test suite before build (prebuild hook)
+- Minification of JavaScript code (with `--minify`)
+- Compression into distributable ZIP (with `--zip`)
+- Standalone executable creation via Bun
+
+### Distribution
+
+The build process creates:
+- **Executable**: `./dist/summarai` (or `summarai.exe` on Windows)
+- **Archive**: `./release/summarai-v{version}.zip` (when using `--zip`)
+
+**Distribution locations:**
+- `./dist/`: Uncompressed build output
+- `./release/`: Compressed archives for distribution
+
+### Deployment Options
+
+1. **Local Installation**: Copy executable to `/usr/local/bin` or similar
+2. **Shared Distribution**: Use ZIP archive from `./release/`
+3. **Package Manager**: Executable can be integrated with package managers
+4. **Docker**: Can be containerized with runtime dependencies (ffmpeg, etc.)
+
 ## 🔒 Security Features
 
 The system includes comprehensive security measures:
@@ -443,19 +764,33 @@ The system includes comprehensive security measures:
 
 ## 📝 Recent Updates
 
-- **v2.1**: Major security overhaul with comprehensive input validation and secure command execution
-- **v2.0**: Complete configuration system overhaul with centralized YAML config
-- **Enhanced Security**: Added path traversal protection and command injection prevention
-- **Test Suite**: Comprehensive test coverage with 46+ passing tests
-- **Error Handling**: Robust error handling framework with detailed logging
-- **Bun Compatibility**: Full support for Bun runtime including VFS workarounds
-- **Flexible Date Ranges**: Process Voice Memos from specific date ranges
-- **Enhanced File Watching**: Improved stability and error handling
-- **Video File Support**: Full support for extracting and processing audio from video files
-- **Retry Logic**: Robust error recovery with exponential backoff
-- **Silent Mode**: Fully automated processing capabilities
-- **Model Checking**: Automatic monitoring for newer Claude models
-- **Hardware Integration**: Sony IC Recorder sync utility with Keyboard Maestro support
+### v2.2.4 (Current)
+- **Persistent Failure Tracking**: Failed files logged to NDJSON with automatic recovery on startup
+- **Auto-Recovery System**: Orphaned lock file cleanup and failed file queue restoration
+- **Claude Sonnet 4.5**: Upgraded to latest model (`claude-sonnet-4-5-20250929`) for improved summarization
+- **Enhanced iCloud Validation**: Advanced file readiness detection using `mdls` metadata and tail-read verification
+- **ElevenLabs Subscription Monitoring**: Real-time API usage tracking with character limit warnings
+- **Advanced Transcript Formatting**: Intelligent sentence-based segmentation with configurable pause thresholds
+- **Per-Directory Configuration**: Independent transcription service and processing settings per watch directory
+- **File Integrity Checks**: `moov atom` detection for MP4/M4A files with corruption detection
+- **Configurable Segments Output**: Optional toggle for creating separate `.txt` transcript files
+
+### v2.1
+- Major security overhaul with comprehensive input validation and secure command execution
+- Enhanced Security: Added path traversal protection and command injection prevention
+- Test Suite: Comprehensive test coverage with 46+ passing tests
+- Error Handling: Robust error handling framework with detailed logging
+
+### v2.0
+- Complete configuration system overhaul with centralized YAML config
+- Bun Compatibility: Full support for Bun runtime including VFS workarounds
+- Flexible Date Ranges: Process Voice Memos from specific date ranges
+- Enhanced File Watching: Improved stability and error handling
+- Video File Support: Full support for extracting and processing audio from video files
+- Retry Logic: Robust error recovery with exponential backoff
+- Silent Mode: Fully automated processing capabilities
+- Model Checking: Automatic monitoring for newer Claude models
+- Hardware Integration: Sony IC Recorder sync utility with Keyboard Maestro support
 
 ## 🤝 Contributing
 

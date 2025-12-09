@@ -10,6 +10,14 @@ const dryRunMode = args.includes('--dry-run');
 const showHelp = args.includes('--help') || args.includes('-h');
 const showVersion = args.includes('--version') || args.includes('-v');
 
+// Parse --directory argument
+const directoryIndex = args.findIndex(arg => arg === '--directory');
+let customDirectoryPath = null;
+if (directoryIndex !== -1 && directoryIndex + 1 < args.length &&
+    !args[directoryIndex + 1].startsWith('--')) {
+  customDirectoryPath = args[directoryIndex + 1];
+}
+
 // Get version info
 function getVersionInfo() {
   // Try to get version from build-time defines first (for compiled executable)
@@ -46,12 +54,13 @@ if (showHelp) {
 Usage: summarai [options]
 
 Options:
+  --directory <path>                Process all audio files in specified directory and exit
   --cleanout                        Process all existing files in Google Drive unprocessed folder before watching
   --process-recent-vm [date-range]  Process unprocessed Voice Memos from specified date range
                                     Formats: MM-DD-YY (from date to now)
                                             MM-DD-YY:MM-DD-YY (date range)
                                             (no date = last 120 days)
-  --dry-run                         When used with --process-recent-vm, show what would be processed without actually processing
+  --dry-run                         Show what would be processed without actually processing
   --version, -v                     Show version information
   --help, -h                        Show this help message
 
@@ -63,6 +72,8 @@ Files from Google Drive are moved to processed folder after successful processin
 Voice Memos files are never moved.
 
 Examples:
+  summarai --directory ~/Downloads/audio            # Process all files in directory and exit
+  summarai --directory ~/Downloads/audio --dry-run  # Preview what would be processed
   summarai --process-recent-vm                       # Process Voice Memos from last 120 days
   summarai --process-recent-vm --dry-run             # See what would be processed (last 120 days)
   summarai --process-recent-vm 7-1-25                # Process from July 1, 2025 to now
@@ -1150,6 +1161,103 @@ async function cleanoutUnprocessed() {
 }
 
 /**
+ * Process all audio files in a custom directory and exit
+ * @param {string} directoryPath - Path to the directory to process
+ */
+async function processCustomDirectory(directoryPath) {
+  const expandedPath = expandPath(directoryPath);
+
+  // Validate directory exists
+  if (!fs.existsSync(expandedPath)) {
+    logger.failure(LogCategory.WATCH, `Directory not found: ${expandedPath}`);
+    process.exit(1);
+  }
+
+  // Check if it's actually a directory
+  const stats = fs.statSync(expandedPath);
+  if (!stats.isDirectory()) {
+    logger.failure(LogCategory.WATCH, `Not a directory: ${expandedPath}`);
+    process.exit(1);
+  }
+
+  logger.section(`Custom Directory Mode - ${expandedPath}`);
+
+  // Get all supported files
+  const files = fs.readdirSync(expandedPath);
+  const supportedFiles = files
+    .filter(file => isSupportedFile(file) && !file.endsWith('.processing'))
+    .map(file => path.join(expandedPath, file))
+    .map(filePath => ({
+      path: filePath,
+      stats: fs.statSync(filePath)
+    }))
+    .sort((a, b) => b.stats.mtime - a.stats.mtime) // Sort by modification time, newest first
+    .map(item => item.path);
+
+  if (supportedFiles.length === 0) {
+    logger.info(LogCategory.WATCH, `No supported audio files found in: ${expandedPath}`);
+    return;
+  }
+
+  // Dry run mode
+  if (dryRunMode) {
+    logger.info(LogCategory.WATCH, `Would process ${supportedFiles.length} file(s) from: ${expandedPath}`);
+    supportedFiles.forEach(file => {
+      const fileStats = fs.statSync(file);
+      const modTime = fileStats.mtime.toLocaleString();
+      logger.fileStatus(path.basename(file), LogStatus.ARROW, `modified: ${modTime}`);
+    });
+    return;
+  }
+
+  logger.info(LogCategory.PROCESSING, `Found ${supportedFiles.length} file(s) to process:`);
+  supportedFiles.forEach(file => {
+    const fileStats = fs.statSync(file);
+    const modTime = fileStats.mtime.toLocaleString();
+    logger.fileStatus(path.basename(file), LogStatus.ARROW, `modified: ${modTime}`);
+  });
+  console.log('');
+
+  // Create ephemeral directory config with defaults
+  const customDirConfig = {
+    name: 'Custom Directory',
+    watchPath: expandedPath,
+    processedPath: null,
+    enabled: true,
+    moveAfterProcessing: false,
+    outputPath: getConfigValue(config, 'directories.output', null) ||
+                (directoryConfigs[0]?.outputPath) || './output',
+    processingOptions: {
+      transcriptionService: getConfigValue(config, 'transcription.defaultService', 'scribe'),
+      compress: getConfigValue(config, 'audio.compression.enabled', true),
+      bitrate: getConfigValue(config, 'audio.compression.normal.bitrate', '48k'),
+      maxSpeakers: null,
+      diarize: true,
+      model: null
+    }
+  };
+
+  // Add to directoryConfigs so getFileDirectoryConfig() can find it
+  directoryConfigs.push(customDirConfig);
+
+  // Process files sequentially
+  for (let i = 0; i < supportedFiles.length; i++) {
+    const filePath = supportedFiles[i];
+    console.log(`\n[${i + 1}/${supportedFiles.length}] Processing: ${path.basename(filePath)}`);
+
+    await processFile(filePath);
+
+    // Configured delay between files
+    if (i < supportedFiles.length - 1) {
+      const delay = getConfigValue(config, 'watch.queue.delayBetweenFiles', 2000);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  console.log('\n[Custom Directory Mode] Finished processing all files.\n');
+}
+
+/**
  * Process a new file using directory-specific configuration
  * @param {string} filePath - Path to the file to process
  */
@@ -1370,10 +1478,17 @@ async function startWatching() {
   // Validate directories and get list to watch
   const dirsToWatch = await validateDirectories();
   
+  // Handle custom directory mode (process and exit)
+  if (customDirectoryPath) {
+    await processCustomDirectory(customDirectoryPath);
+    logger.success(LogCategory.WATCH, 'Custom directory processing complete');
+    process.exit(0);
+  }
+
   // Check config for initial processing modes
   const configCleanout = getConfigValue(config, 'watch.initialProcessing.cleanout', false);
   const configProcessRecent = getConfigValue(config, 'watch.initialProcessing.processRecentVm', false);
-  
+
   if (cleanoutMode || configCleanout) {
     await cleanoutUnprocessed();
   }
