@@ -81,7 +81,28 @@ watch:
   stability:
     threshold: 2000                # ms to wait for file to be stable before processing
     pollInterval: 100              # ms between stability checks
-  
+
+    # macOS metadata checks for cloud files (iCloud, Google Drive, Dropbox)
+    mdlsCheck:
+      enabled: true                # Enable macOS Spotlight metadata checks
+      attempts: 5                  # Retry attempts
+      delayMs: 3000                # Wait between retries (ms)
+
+    # Tail-read file integrity verification
+    tailRead:
+      enabled: true                # Verify file end is readable
+      attempts: 5                  # Retry attempts
+      delayMs: 4000                # Wait between retries (ms)
+      tailBytes: 65536             # Bytes to read from file end (64KB)
+
+    # File validation settings
+    validation:
+      enabled: true                # Enable/disable validation
+      level: 'moov'                # Validation level: moov, full, basic
+      minFileSize: 1024            # Minimum file size in bytes
+      retryMaxAttempts: 3          # Max retry attempts for failed files
+      retryDelays: [5000, 15000, 30000]  # Delays per attempt (ms)
+
   # Queue processing
   queue:
     delayBetweenFiles: 2000        # ms delay between processing files

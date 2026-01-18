@@ -1013,8 +1013,8 @@ async function moveToProcessed(originalPath, compressedPath, generatedName, temp
  * @param {Error} error - The error that caused the failure
  */
 function scheduleRetry(filePath, error) {
-  const maxAttempts = getConfigValue(config, 'watch.validation.retries.maxAttempts', 3);
-  const retryDelays = getConfigValue(config, 'watch.validation.retries.delays', [5000, 15000, 30000]);
+  const maxAttempts = getConfigValue(config, 'watch.stability.validation.retryMaxAttempts', 3);
+  const retryDelays = getConfigValue(config, 'watch.stability.validation.retryDelays', [5000, 15000, 30000]);
 
   const currentAttempt = retryCount.get(filePath) || 0;
   const nextAttempt = currentAttempt + 1;

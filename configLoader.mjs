@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
+import { validateConfig as validateConfigSchema } from './src/configSchema.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -77,9 +78,16 @@ function parseValue(value) {
   if (commentIndex !== -1) {
     value = value.substring(0, commentIndex).trim();
   }
-  
+
+  // Handle inline arrays [val1, val2, val3]
+  if (value.startsWith('[') && value.endsWith(']')) {
+    const inner = value.slice(1, -1).trim();
+    if (inner === '') return [];
+    return inner.split(',').map(item => parseValue(item.trim()));
+  }
+
   // Handle quoted strings
-  if ((value.startsWith('"') && value.endsWith('"')) || 
+  if ((value.startsWith('"') && value.endsWith('"')) ||
       (value.startsWith("'") && value.endsWith("'"))) {
     return value.slice(1, -1);
   }
@@ -421,12 +429,18 @@ export function loadConfig(configPath = null) {
       config = applyEnvOverrides(config);
     }
     
-    // Validate configuration
+    // Validate configuration (basic structure checks)
     const errors = validateConfig(config);
     if (errors.length > 0) {
       throw new Error(`Configuration validation failed:\\n${errors.join('\\n')}`);
     }
-    
+
+    // Schema validation with Zod (warnings only, non-blocking)
+    const schemaResult = validateConfigSchema(config);
+    if (!schemaResult.success) {
+      console.warn('[config] Schema validation warnings:', schemaResult.errors.join(', '));
+    }
+
     return config;
   } catch (error) {
     throw new Error(`Failed to load configuration: ${error.message}`);
@@ -491,3 +505,6 @@ export const defaultConfig = {
     }
   }
 };
+
+// Export parseValue for testing
+export { parseValue };

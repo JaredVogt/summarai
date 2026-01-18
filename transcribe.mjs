@@ -294,9 +294,9 @@ export async function processVoiceMemo(filePath, options = {}) {
     validateFileSize(validatedPath, 1024); // 1GB limit
 
     // Get validation configuration
-    const validationEnabled = getConfigValue(config, 'watch.validation.enabled', true);
-    const validationLevel = getConfigValue(config, 'watch.validation.level', 'moov');
-    const minFileSize = getConfigValue(config, 'watch.validation.minFileSize', 1024);
+    const validationEnabled = getConfigValue(config, 'watch.stability.validation.enabled', true);
+    const validationLevel = getConfigValue(config, 'watch.stability.validation.level', 'moov');
+    const minFileSize = getConfigValue(config, 'watch.stability.validation.minFileSize', 1024);
 
     // Check minimum file size
     const stats = fs.statSync(validatedPath);
