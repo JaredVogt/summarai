@@ -1,3 +1,10 @@
+# macOS
+.DS_Store
+
+# Local config and data
+config.yaml
+processed_log.ndjson
+
 output/
 process_history.json
 temp/
