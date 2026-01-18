@@ -124,6 +124,64 @@ node summarai.mjs speaker list
 node summarai.mjs speaker delete "Jared"
 ```
 
+### YouTube Video Processing
+Download, transcribe, and summarize YouTube videos:
+
+```bash
+# Process a YouTube video by URL
+node summarai.mjs https://youtube.com/watch?v=VIDEO_ID
+
+# Process by video ID
+node summarai.mjs dQw4w9WgXcQ
+
+# Use lower quality audio (faster download/processing)
+node summarai.mjs dQw4w9WgXcQ --low-quality
+
+# Short URL format works too
+node summarai.mjs https://youtu.be/VIDEO_ID
+```
+
+**How it works:**
+1. Extracts video ID from URL (supports youtube.com, youtu.be, and raw video IDs)
+2. Downloads audio via `yt-dlp`
+3. Attempts to fetch existing YouTube transcript (for reference)
+4. Transcribes audio with ElevenLabs Scribe
+5. Generates Claude summary with video metadata
+6. Saves output to configured YouTube output directory
+
+**Directory Watching for YouTube URLs:**
+
+You can also create `.txt` files containing YouTube URLs that will be automatically processed:
+
+```yaml
+# config.yaml - watch directory for YouTube URL files
+directories:
+  watch:
+    summaraiYoutube:
+      name: "Summarai YouTube"
+      path: ~/Dropbox/Apps/Summarai-Youtube
+      enabled: true
+      fileType: youtube-url  # Special marker for URL text files
+      outputPath: ~/Obsidian/Youtube
+```
+
+Drop a `.txt` file containing a YouTube URL into the watched directory, and summarai will automatically download, transcribe, and summarize the video.
+
+**Requirements:** `yt-dlp` must be installed (see Requirements section).
+
+### Custom Directory Processing
+Process all audio files in a directory and exit (no file watching):
+
+```bash
+# Process all audio files in a directory
+node summarai.mjs --directory /path/to/audio/files
+
+# Preview what would be processed (dry run)
+node summarai.mjs --directory /path/to/audio/files --dry-run
+```
+
+This is useful for batch processing existing audio files without starting the file watcher.
+
 ### Automatic File Watching
 Monitor directories for new files and process them automatically:
 
@@ -272,6 +330,7 @@ Migration from legacy JSON array:
 - **Node.js** v18+ or **Bun** runtime
 - **ffmpeg** installed and available in PATH
 - **API keys** for the services you want to use (Anthropic, ElevenLabs, OpenAI)
+- **yt-dlp** (optional, for YouTube video processing) - Install with `brew install yt-dlp`
 - **Python 3.8+** (optional, for speaker identification feature)
 - **HuggingFace token** (optional, for speaker identification)
 
@@ -978,7 +1037,17 @@ The system includes comprehensive security measures:
 
 ## 📝 Recent Updates
 
-### v2.2.5 (Current)
+### v2.2.6 (Current)
+- **YouTube Video Processing**: Download, transcribe, and summarize YouTube videos via `yt-dlp`
+  - Supports full URLs, short URLs (youtu.be), and raw video IDs
+  - Automatic YouTube transcript fallback when available
+  - `--low-quality` flag for faster processing
+  - Directory watching for `.txt` files containing YouTube URLs
+- **Custom Directory Processing**: New `--directory` flag to process all audio files in a directory and exit
+  - Combines with `--dry-run` for previewing what would be processed
+  - Useful for batch processing without starting the file watcher
+
+### v2.2.5
 - **Speaker Identification**: New Pyannote-based speaker identification to replace generic "Speaker 0/1" with actual names
 - **Voice Profile Enrollment**: CLI commands to enroll, list, and delete speaker profiles
 - **Automatic Speaker Matching**: Transcripts automatically use enrolled speaker names when confidence threshold is met

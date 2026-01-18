@@ -1,0 +1,10 @@
+service: summarai
+framework: null
+process_name: summarai
+display_name: Summarai
+start_cmd: cd ~/projects/summarai && npm run dev
+path: /Users/jaredvogt/projects/summarai
+ports:
+  dev:
+    port: 3530
+    reserved_range: 1

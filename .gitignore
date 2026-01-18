@@ -13,3 +13,10 @@ move_debug.log
 
 # Cruft folder for temporary markdown files
 cruft/
+
+# Dependencies
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
