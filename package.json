@@ -1,6 +1,6 @@
 {
   "name": "summarai",
-  "version": "2.2.4",
+  "version": "2.3.0",
   "description": "summarai - Secure audio file processor with automatic transcription and summarization",
   "main": "summarai.mjs",
   "type": "module",
@@ -23,7 +23,8 @@
     "chokidar": "^3.5.3",
     "dotenv": "^16.3.1",
     "form-data": "^4.0.0",
-    "@elevenlabs/elevenlabs-js": "^0.1.0"
+    "@elevenlabs/elevenlabs-js": "^2.15.0",
+    "youtube-transcript-plus": "^1.0.8"
   },
   "engines": {
     "bun": ">=1.0.0"

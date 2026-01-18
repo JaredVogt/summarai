@@ -2,28 +2,62 @@
 
 # Directory Configuration
 directories:
+  # YouTube-specific output configuration
+  youtube:
+    outputPath: ~/Obsidian/SolidBlack/Youtube
+
   # Watch directories - simplified structure for parser compatibility
   watch:
     voiceMemos:
       name: "Voice Memos"
       path: ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings
       enabled: true
+      cleanoutOnStartup: false
       moveAfterProcessing: false
       outputPath: ~/Obsidian/SolidBlack/VMs
       # outputPath: ~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription
       transcriptionService: scribe
       compress: true
-    
+
     googleDrive:
       name: "Google Drive Unprocessed"
       path: "~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription/unprocessed"
       enabled: true
+      cleanoutOnStartup: true
       moveAfterProcessing: true
       processedPath: "~/Library/CloudStorage/GoogleDrive-jared@wolffaudio.com/My Drive/VM_transcription/processed"  # this is where the audio files go
       outputPath: ~/Obsidian/SolidBlack/VMs
       transcriptionService: scribe
       compress: true
-  
+
+    recupApp:
+      name: "RecUp App"
+      path: ~/Library/CloudStorage/Dropbox/Apps/RecUp App
+      enabled: true
+      cleanoutOnStartup: true
+      moveAfterProcessing: true
+      processedPath: ~/Library/CloudStorage/Dropbox/Apps/RecUp App/processed
+      outputPath: ~/Obsidian/SolidBlack/VMs
+      transcriptionService: scribe
+      compress: true
+      # Date pattern for RecUp App files (format: DV-2025-12-11-133321.mp3)
+      # Uses named capture groups: year, month, day, time
+      datePattern:
+        regex: "DV-(?<year>\\d{4})-(?<month>\\d{2})-(?<day>\\d{2})-(?<time>\\d{6})"
+        timeFormat: "HHMMSS"
+
+    summaraiYoutube:
+      name: "Summarai YouTube"
+      path: ~/Library/CloudStorage/Dropbox/Apps/Summarai-Youtube
+      enabled: true
+      cleanoutOnStartup: true
+      moveAfterProcessing: true
+      processedPath: ~/Library/CloudStorage/Dropbox/Apps/Summarai-Youtube/processed
+      outputPath: ~/Obsidian/SolidBlack/Youtube
+      transcriptionService: scribe
+      compress: true
+      fileType: youtube-url  # Special marker for URL text files
+
   # Temporary files directory
   temp: ./temp
 
@@ -80,6 +114,25 @@ watch:
   stability:
     threshold: 2000              # ms to wait before file is considered stable
     pollInterval: 100            # ms between stability checks
+
+    # macOS metadata checks for cloud files (iCloud, Google Drive, Dropbox)
+    mdlsCheck:
+      enabled: true              # Enable macOS Spotlight metadata checks
+      attempts: 5                # Retry attempts
+      delayMs: 3000              # Wait between retries (ms)
+
+    # Tail-read file integrity verification
+    tailRead:
+      enabled: true              # Verify file end is readable
+      attempts: 5                # Retry attempts
+      delayMs: 4000              # Wait between retries (ms)
+      tailBytes: 65536           # Bytes to read from file end (64KB)
+
+    # File validation retry settings
+    validation:
+      retries:
+        maxAttempts: 3           # Max retry attempts for failed files
+        delays: [5000, 15000, 30000]  # Delays per attempt (ms)
   
   # Queue processing
   queue:
@@ -103,6 +156,12 @@ audio:
     codec: aac                   # Audio codec to use
     channels: 1                  # 1 for mono, 2 for stereo
     format: m4a                  # Output format
+
+    # Silence removal settings (preview with: summarai --silence-preview <file>)
+    silenceRemoval:
+      enabled: true              # Enable/disable silence removal during processing
+      threshold: -25             # dB level (-25 = very conservative, only true silence)
+      duration: 0.5              # Minimum silence duration in seconds to remove
   
   # Chunking for large files
   chunking:
@@ -160,10 +219,34 @@ api:
 claude:
   # Set the Claude model used for summarization.
   # Note: instructions.md is used for prompts; other Claude prompt fields are intentionally removed.
-  # Set to the latest Claude Sonnet 4.5 model
-  # Example Opus 4.1 (for future switching): claude-opus-4-1-20250805
-  # Opus 4.1 alias also exists: claude-opus-4-1
-  model: claude-sonnet-4-5-20250929
+  # Set to the latest Claude Opus 4.5 model
+  # Alternative: claude-sonnet-4-5-20250929 (lower cost)
+  model: claude-opus-4-5-20251101
+
+# Speaker Identification Configuration
+# Uses Pyannote embeddings to identify enrolled speakers in transcripts
+speakerIdentification:
+  # Enable/disable speaker identification
+  enabled: false
+
+  # Directory for voice profiles (fingerprints)
+  profilesDir: ~/.summarai/profiles
+
+  # Minimum confidence threshold for speaker matching (0.0-1.0)
+  # Higher = more strict, fewer false positives
+  # Lower = more matches, but may have errors
+  threshold: 0.70
+
+  # Python environment settings
+  python:
+    path: ./pyannote/.venv/bin/python3   # Path to Python in venv
+    timeout: 60000             # Timeout in milliseconds for Python operations
+
+  # HuggingFace token for Pyannote model access
+  # Can also use environment variable HUGGINGFACE_TOKEN
+  # Get token at: https://huggingface.co/settings/tokens
+  # Accept model terms at: https://huggingface.co/pyannote/embedding
+  huggingfaceToken: null
 
 # Logging & Monitoring
 logging:

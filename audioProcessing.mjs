@@ -2,6 +2,7 @@ import { exec as execCb, spawn } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { startSpinner } from './utils.mjs';
 import { loadConfig, getConfigValue } from './configLoader.mjs';
 
@@ -236,6 +237,48 @@ export function cleanupTempDir(tempDir) {
 }
 
 /**
+ * Clean up stale summarai temp directories older than specified age
+ * Called on startup to remove orphaned temp dirs from crashed processes
+ * @param {number} maxAgeMs - Maximum age in milliseconds (default: 1 hour)
+ */
+export function cleanupStaleTempDirs(maxAgeMs = 3600000) {
+  const tempBase = path.join(os.tmpdir(), 'summarai_temp');
+
+  if (!fs.existsSync(tempBase)) {
+    return; // Nothing to clean
+  }
+
+  try {
+    const entries = fs.readdirSync(tempBase, { withFileTypes: true });
+    const now = Date.now();
+    let cleanedCount = 0;
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      const dirPath = path.join(tempBase, entry.name);
+      try {
+        const stats = fs.statSync(dirPath);
+        const age = now - stats.mtimeMs;
+
+        if (age > maxAgeMs) {
+          fs.rmSync(dirPath, { recursive: true, force: true });
+          cleanedCount++;
+        }
+      } catch {
+        // Ignore individual directory errors
+      }
+    }
+
+    if (cleanedCount > 0) {
+      console.log(`[Cleanup] Removed ${cleanedCount} stale temp director${cleanedCount === 1 ? 'y' : 'ies'}`);
+    }
+  } catch (error) {
+    console.warn(`[Cleanup] Error cleaning stale temp directories: ${error.message}`);
+  }
+}
+
+/**
  * Splits a large audio file into smaller chunks of specified size
  * @param {string} audioFilePath - Path to the audio file to split
  * @param {string} outputDir - Directory to store the chunks
@@ -314,4 +357,80 @@ export async function splitAudioFile(audioFilePath, outputDir, maxSizeMB = null)
     console.error('Error splitting audio file:', error.message);
     throw new Error(`Failed to split audio file: ${error.message}`);
   }
+}
+
+/**
+ * Format seconds to human-readable time string
+ * @param {number} seconds - Time in seconds
+ * @returns {string} - Formatted time string (e.g., "1m 23.45s" or "45.67s")
+ */
+function formatTime(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = (seconds % 60).toFixed(2);
+  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+}
+
+/**
+ * Parse FFmpeg silencedetect output from stderr
+ * @param {string} stderr - FFmpeg stderr output
+ * @returns {Array} - Array of silence sections with start, end, duration
+ */
+function parseSilenceOutput(stderr) {
+  const sections = [];
+  const lines = stderr.split('\n');
+  let currentStart = null;
+
+  for (const line of lines) {
+    if (line.includes('silence_start:')) {
+      const match = line.match(/silence_start: ([\d.]+)/);
+      if (match) currentStart = parseFloat(match[1]);
+    }
+
+    if (line.includes('silence_end:')) {
+      const match = line.match(/silence_end: ([\d.]+) \| silence_duration: ([\d.]+)/);
+      if (match && currentStart !== null) {
+        sections.push({
+          start: currentStart,
+          end: parseFloat(match[1]),
+          duration: parseFloat(match[2])
+        });
+        currentStart = null;
+      }
+    }
+  }
+
+  return sections;
+}
+
+/**
+ * Preview silence detection without modifying the file
+ * Uses FFmpeg's silencedetect filter to report what WOULD be removed
+ * @param {string} audioFile - Path to audio file
+ * @param {number} threshold - dB threshold (default: -25)
+ * @param {number} minDuration - Minimum silence duration in seconds (default: 0.5)
+ * @returns {Promise<Object>} - Object with sections array, totalSilence, and formatTime function
+ */
+export async function previewSilenceRemoval(audioFile, threshold = -25, minDuration = 0.5) {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn('ffmpeg', [
+      '-i', audioFile,
+      '-af', `silencedetect=n=${threshold}dB:d=${minDuration}`,
+      '-f', 'null',
+      '-'
+    ]);
+
+    let stderrOutput = '';
+
+    ffmpeg.stderr.on('data', (data) => {
+      stderrOutput += data.toString();
+    });
+
+    ffmpeg.on('close', (code) => {
+      const sections = parseSilenceOutput(stderrOutput);
+      const totalSilence = sections.reduce((sum, s) => sum + s.duration, 0);
+      resolve({ sections, totalSilence, formatTime });
+    });
+
+    ffmpeg.on('error', reject);
+  });
 }

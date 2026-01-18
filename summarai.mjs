@@ -9,6 +9,7 @@ const cleanoutMode = args.includes('--cleanout');
 const dryRunMode = args.includes('--dry-run');
 const showHelp = args.includes('--help') || args.includes('-h');
 const showVersion = args.includes('--version') || args.includes('-v');
+const silencePreviewMode = args.includes('--silence-preview');
 
 // Parse --directory argument
 const directoryIndex = args.findIndex(arg => arg === '--directory');
@@ -51,9 +52,10 @@ function getVersionInfo() {
 // Show help immediately if requested, before any imports
 if (showHelp) {
   logger.raw(`
-Usage: summarai [options]
+Usage: summarai [options] [command] [youtube-url]
 
 Options:
+  <youtube-url>                     Process a YouTube video (URL or video ID)
   --directory <path>                Process all audio files in specified directory and exit
   --cleanout                        Process all existing files in Google Drive unprocessed folder before watching
   --process-recent-vm [date-range]  Process unprocessed Voice Memos from specified date range
@@ -61,8 +63,15 @@ Options:
                                             MM-DD-YY:MM-DD-YY (date range)
                                             (no date = last 120 days)
   --dry-run                         Show what would be processed without actually processing
+  --low-quality, -l                 Use lower quality audio for faster processing
   --version, -v                     Show version information
   --help, -h                        Show this help message
+
+Speaker Identification Commands:
+  speaker enroll <name> <audio-file>  Enroll a new speaker profile from audio sample
+  speaker list                        List all enrolled speaker profiles
+  speaker delete <name>               Delete a speaker profile
+  speaker check                       Check Python environment for speaker identification
 
 This tool watches for new audio/video files in:
 - Apple Voice Memos directory
@@ -71,7 +80,15 @@ This tool watches for new audio/video files in:
 Files from Google Drive are moved to processed folder after successful processing.
 Voice Memos files are never moved.
 
+YouTube Processing:
+- Pass a YouTube URL or video ID to download, transcribe, and summarize
+- Audio is downloaded via yt-dlp, transcribed with ElevenLabs Scribe
+- Summaries are generated with Claude and saved to Obsidian
+
 Examples:
+  summarai https://youtube.com/watch?v=VIDEO_ID     # Process YouTube video
+  summarai dQw4w9WgXcQ                              # Process by video ID
+  summarai dQw4w9WgXcQ --low-quality                # YouTube with lower quality audio
   summarai --directory ~/Downloads/audio            # Process all files in directory and exit
   summarai --directory ~/Downloads/audio --dry-run  # Preview what would be processed
   summarai --process-recent-vm                       # Process Voice Memos from last 120 days
@@ -80,6 +97,8 @@ Examples:
   summarai --process-recent-vm 4-1-25:5-31-25        # Process from April 1 to May 31, 2025
   summarai --process-recent-vm 7-1-25 --dry-run      # Dry run from July 1, 2025 to now
   summarai --cleanout                                # Process Google Drive files then watch
+  summarai speaker enroll "Jared" ~/voice-sample.wav # Enroll speaker profile
+  summarai speaker list                              # Show all enrolled speakers
   `);
   process.exit(0);
 }
@@ -90,12 +109,18 @@ import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
-import { processVoiceMemo } from './transcribe.mjs';
-import { cleanupTempDir } from './audioProcessing.mjs';
+import { processVoiceMemo, processYouTubeUrl, isYouTubeUrl } from './transcribe.mjs';
+import { cleanupTempDir, cleanupStaleTempDirs, previewSilenceRemoval } from './audioProcessing.mjs';
 import { loadConfig, getConfigValue, getLastConfigPath } from './configLoader.mjs';
 import logger, { LogCategory, LogStatus } from './src/logger.mjs';
 import { appendRecord, appendFailureRecord, loadIndex } from './src/processHistory.mjs';
 import { ValidationError } from './src/validation.mjs';
+import {
+  checkPythonEnvironment,
+  enrollSpeaker,
+  listProfiles,
+  deleteProfile
+} from './speakerIdentification.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -109,6 +134,219 @@ if (showVersion) {
   console.log(`Build: ${versionInfo.buildDate.replace(/"/g, '')} ${timeOnly}`);
   console.log(`Platform: ${process.platform} ${process.arch}`);
   process.exit(0);
+}
+
+// Handle silence preview mode - analyze silence without modifying file
+if (silencePreviewMode) {
+  const fileIndex = args.indexOf('--silence-preview') + 1;
+  const filePath = args[fileIndex];
+
+  if (!filePath || filePath.startsWith('--') || !fs.existsSync(filePath)) {
+    console.error('Error: Please provide a valid audio file path');
+    console.error('Usage: summarai --silence-preview /path/to/audio.mp3');
+    process.exit(1);
+  }
+
+  // Load config for threshold settings
+  let previewConfig;
+  try {
+    previewConfig = loadConfig();
+  } catch {
+    previewConfig = {};
+  }
+
+  const threshold = getConfigValue(previewConfig, 'audio.processing.silenceRemoval.threshold', -25);
+  const duration = getConfigValue(previewConfig, 'audio.processing.silenceRemoval.duration', 0.5);
+
+  console.log(`\nSilence Preview for: ${path.basename(filePath)}`);
+  console.log(`Settings: threshold=${threshold}dB, min duration=${duration}s\n`);
+
+  // Use top-level await to block execution
+  try {
+    const result = await previewSilenceRemoval(filePath, threshold, duration);
+    const { sections, totalSilence, formatTime } = result;
+
+    if (sections.length === 0) {
+      console.log('No silence detected with current settings.');
+      console.log('\nTip: Try a higher threshold (e.g., -35) to detect more silence.');
+    } else {
+      sections.forEach((s, i) => {
+        console.log(`  ${i + 1}. Would remove ${s.duration.toFixed(2)}s from ${formatTime(s.start)} to ${formatTime(s.end)}`);
+      });
+      console.log(`\nTotal silence to remove: ${totalSilence.toFixed(2)}s across ${sections.length} section${sections.length === 1 ? '' : 's'}`);
+    }
+  } catch (error) {
+    console.error(`Error analyzing file: ${error.message}`);
+    process.exit(1);
+  }
+
+  process.exit(0);
+}
+
+// Handle speaker subcommands - exit immediately if in speaker mode
+const speakerIndex = args.findIndex(arg => arg === 'speaker');
+const isSpeakerMode = speakerIndex !== -1;
+
+if (isSpeakerMode) {
+  handleSpeakerCommand(args.slice(speakerIndex + 1)).then(exitCode => {
+    process.exit(exitCode);
+  }).catch(err => {
+    console.error('Error:', err.message);
+    process.exit(1);
+  });
+}
+
+// Check for YouTube URL in arguments - process and exit if found
+const lowQualityMode = args.includes('--low-quality') || args.includes('-l');
+const potentialYouTubeArg = args.find(arg =>
+  !arg.startsWith('-') &&
+  arg !== 'speaker' &&
+  isYouTubeUrl(arg)
+);
+
+if (potentialYouTubeArg) {
+  // YouTube mode - process video and exit
+  (async () => {
+    try {
+      logger.info(LogCategory.PROCESSING, `Processing YouTube video: ${potentialYouTubeArg}`);
+      const result = await processYouTubeUrl(potentialYouTubeArg, {
+        lowQuality: lowQualityMode,
+        transcriptionService: 'scribe'
+      });
+      logger.success(LogCategory.PROCESSING, `YouTube video processed successfully`);
+      logger.info(LogCategory.PROCESSING, `Output: ${result.mdFilePath}`);
+      process.exit(0);
+    } catch (error) {
+      logger.failure(LogCategory.PROCESSING, `Failed to process YouTube video: ${error.message}`);
+      process.exit(1);
+    }
+  })();
+}
+
+/**
+ * Handle speaker subcommands (enroll, list, delete, check)
+ * @param {Array} subArgs - Arguments after 'speaker'
+ * @returns {Promise<number>} - Exit code
+ */
+async function handleSpeakerCommand(subArgs) {
+  const subCommand = subArgs[0];
+
+  if (!subCommand) {
+    console.log('Speaker identification commands:');
+    console.log('  speaker enroll <name> <audio-file>  - Enroll a new speaker profile');
+    console.log('  speaker list                        - List all enrolled speakers');
+    console.log('  speaker delete <name>               - Delete a speaker profile');
+    console.log('  speaker check                       - Check Python environment');
+    return 0;
+  }
+
+  switch (subCommand) {
+    case 'enroll': {
+      const name = subArgs[1];
+      const audioFile = subArgs[2];
+
+      if (!name || !audioFile) {
+        console.error('Usage: summarai speaker enroll <name> <audio-file>');
+        console.error('Example: summarai speaker enroll "Jared" ~/voice-sample.wav');
+        return 1;
+      }
+
+      try {
+        const result = await enrollSpeaker(name, audioFile);
+        console.log(`\nSuccessfully enrolled speaker "${result.name}"`);
+        console.log(`  Profile ID: ${result.profileId}`);
+        console.log(`  Sample duration: ${result.sampleDuration?.toFixed(1) || 'unknown'}s`);
+        console.log(`  Profile path: ${result.profilePath}`);
+        return 0;
+      } catch (error) {
+        console.error(`\nFailed to enroll speaker: ${error.message}`);
+        return 1;
+      }
+    }
+
+    case 'list': {
+      try {
+        const result = await listProfiles();
+
+        if (result.count === 0) {
+          console.log('\nNo speaker profiles enrolled.');
+          console.log('To enroll a speaker: summarai speaker enroll <name> <audio-file>');
+        } else {
+          console.log(`\nEnrolled speakers (${result.count}):\n`);
+          result.profiles.forEach((profile, index) => {
+            const duration = profile.sample_duration_seconds
+              ? `${profile.sample_duration_seconds.toFixed(1)}s sample`
+              : 'unknown duration';
+            const created = profile.created_at
+              ? new Date(profile.created_at).toLocaleDateString()
+              : 'unknown date';
+            console.log(`  ${index + 1}. ${profile.display_name || profile.name}`);
+            console.log(`     ID: ${profile.id}, Created: ${created}, ${duration}`);
+          });
+        }
+        return 0;
+      } catch (error) {
+        console.error(`\nFailed to list profiles: ${error.message}`);
+        return 1;
+      }
+    }
+
+    case 'delete': {
+      const name = subArgs[1];
+
+      if (!name) {
+        console.error('Usage: summarai speaker delete <name>');
+        return 1;
+      }
+
+      try {
+        await deleteProfile(name);
+        console.log(`\nDeleted speaker profile "${name}"`);
+        return 0;
+      } catch (error) {
+        console.error(`\nFailed to delete profile: ${error.message}`);
+        return 1;
+      }
+    }
+
+    case 'check': {
+      console.log('\nChecking speaker identification environment...\n');
+
+      try {
+        const result = await checkPythonEnvironment(true);
+
+        if (result.available) {
+          console.log('\nSpeaker identification is available!');
+          console.log(`  Python: ${result.pythonVersion}`);
+          console.log(`  HuggingFace token: ${result.huggingfaceTokenStatus}`);
+
+          if (result.huggingfaceTokenStatus !== 'provided') {
+            console.log('\nNote: Set HUGGINGFACE_TOKEN environment variable to use speaker ID.');
+            console.log('  1. Create account at https://huggingface.co');
+            console.log('  2. Accept model terms at https://huggingface.co/pyannote/embedding');
+            console.log('  3. Create token at https://huggingface.co/settings/tokens');
+          }
+          return 0;
+        } else {
+          console.log('\nSpeaker identification is not available.');
+          console.log(`  Error: ${result.error}`);
+          console.log('\nTo set up speaker identification:');
+          console.log('  1. Install Python 3.8+');
+          console.log('  2. Run: pip install -r pyannote/requirements.txt');
+          console.log('  3. Set HUGGINGFACE_TOKEN environment variable');
+          return 1;
+        }
+      } catch (error) {
+        console.error(`\nEnvironment check failed: ${error.message}`);
+        return 1;
+      }
+    }
+
+    default:
+      console.error(`Unknown speaker command: ${subCommand}`);
+      console.log('Available commands: enroll, list, delete, check');
+      return 1;
+  }
 }
 
 /**
@@ -149,7 +387,7 @@ function expandPath(filepath) {
  */
 function loadDirectoryConfigs() {
   const watchDirs = getConfigValue(config, 'directories.watch', {});
-  
+
   return Object.keys(watchDirs).map(key => {
     const dir = watchDirs[key];
     return {
@@ -157,15 +395,19 @@ function loadDirectoryConfigs() {
       watchPath: expandPath(dir.path),
       processedPath: dir.processedPath ? expandPath(dir.processedPath) : null,
       enabled: dir.enabled !== false,
+      cleanoutOnStartup: dir.cleanoutOnStartup || false,
       moveAfterProcessing: dir.moveAfterProcessing || false,
       outputPath: dir.outputPath ? expandPath(dir.outputPath) : './output',
+      datePattern: dir.datePattern || null,  // Config-provided date pattern for filename parsing
+      fileType: dir.fileType || null,  // Special file type handler (e.g., 'youtube-url')
       processingOptions: {
         transcriptionService: dir.transcriptionService,
         compress: dir.compress,
         bitrate: dir.bitrate,
         maxSpeakers: dir.maxSpeakers,
         diarize: dir.diarize,
-        model: dir.model
+        model: dir.model,
+        datePattern: dir.datePattern || null  // Pass through to processVoiceMemo
       }
     };
   });
@@ -184,6 +426,36 @@ function getFileDirectoryConfig(filePath, directoryConfigs) {
     }
   }
   return null;
+}
+
+/**
+ * Check if a file with the same timestamp prefix has already been processed
+ * Prevents reprocessing the same audio file multiple times
+ * @param {string} filePath - Path to the file to check
+ * @param {Object} dirConfig - Directory configuration
+ * @returns {boolean} - True if already processed
+ */
+function hasAlreadyBeenProcessed(filePath, dirConfig) {
+  if (!dirConfig?.processedPath) return false;
+
+  const filename = path.basename(filePath);
+  // Extract timestamp prefix: "20251214_145415" or "DV-2025-12-14-140308"
+  const timestampMatch = filename.match(/^(\d{8}_\d{6})|^(DV-\d{4}-\d{2}-\d{2}-\d{6})/);
+  if (!timestampMatch) return false;
+
+  const prefix = timestampMatch[0];
+
+  try {
+    if (!fs.existsSync(dirConfig.processedPath)) return false;
+    const processedFiles = fs.readdirSync(dirConfig.processedPath);
+    const alreadyProcessed = processedFiles.some(f => f.startsWith(prefix) || f.includes(prefix));
+    if (alreadyProcessed) {
+      logger.info(LogCategory.PROCESSING, `Skipping ${filename} - already processed (found matching timestamp prefix: ${prefix})`);
+    }
+    return alreadyProcessed;
+  } catch {
+    return false;
+  }
 }
 
 // Load configuration
@@ -272,21 +544,22 @@ const retryTimeouts = new Map(); // filePath -> timeoutId
 /**
  * Check if a file has a supported extension and is not a temp file
  * @param {string} filePath - Path to the file
+ * @param {Object} [dirConfig] - Optional directory config to check for special file types
  * @returns {boolean} - True if supported
  */
-function isSupportedFile(filePath) {
+function isSupportedFile(filePath, dirConfig = null) {
   const ext = path.extname(filePath).toLowerCase();
   const basename = path.basename(filePath);
   const dirname = path.dirname(filePath);
-  
+
   // Get ignore patterns from config
   const ignorePatterns = getConfigValue(config, 'fileProcessing.ignore.patterns', []);
   const ignoreDirs = getConfigValue(config, 'fileProcessing.ignore.directories', []);
-  
+
   // Ensure arrays are valid
   const safeIgnorePatterns = Array.isArray(ignorePatterns) ? ignorePatterns : [];
   const safeIgnoreDirs = Array.isArray(ignoreDirs) ? ignoreDirs : [];
-  
+
   // Check ignore patterns
   for (const pattern of safeIgnorePatterns) {
     if (pattern.includes('*')) {
@@ -297,12 +570,19 @@ function isSupportedFile(filePath) {
       if (basename.startsWith(pattern.replace('*', ''))) return false;
     }
   }
-  
+
   // Check ignore directories
   for (const dir of safeIgnoreDirs) {
     if (dirname.includes(dir)) return false;
   }
-  
+
+  // Check for special file types based on directory config
+  // If no dirConfig provided, try to find it
+  const effectiveDirConfig = dirConfig || getFileDirectoryConfig(filePath, directoryConfigs);
+  if (effectiveDirConfig?.fileType === 'youtube-url' && ext === '.txt') {
+    return true;
+  }
+
   return SUPPORTED_EXTENSIONS.includes(ext);
 }
 
@@ -366,12 +646,12 @@ function cleanupOrphanedLocks() {
             cleanedCount++;
             logger.info(LogCategory.PROCESSING, `Removed orphaned lock: ${file}`);
           } catch (err) {
-            logger.warning(LogCategory.PROCESSING, `Failed to remove lock ${file}: ${err.message}`);
+            logger.warn(LogCategory.PROCESSING, `Failed to remove lock ${file}: ${err.message}`);
           }
         }
       }
     } catch (err) {
-      logger.warning(LogCategory.PROCESSING, `Error scanning ${dirConfig.name}: ${err.message}`);
+      logger.warn(LogCategory.PROCESSING, `Error scanning ${dirConfig.name}: ${err.message}`);
     }
   }
 
@@ -856,10 +1136,16 @@ function addToQueue(filePath) {
   if (!isSupportedFile(filePath)) {
     return;
   }
-  
+
   // Check if file is already in queue or being processed
   if (processingQueue.includes(filePath) || processed.has(filePath)) {
     logger.info(LogCategory.QUEUE, `File already queued or processed: ${path.basename(filePath)}`);
+    return;
+  }
+
+  // Check if file with same timestamp prefix was already processed (prevents reprocessing)
+  const dirConfig = getFileDirectoryConfig(filePath, directoryConfigs);
+  if (hasAlreadyBeenProcessed(filePath, dirConfig)) {
     return;
   }
 
@@ -1161,6 +1447,75 @@ async function cleanoutUnprocessed() {
 }
 
 /**
+ * Process all existing files in a directory on startup
+ * @param {Object} dirConfig - Directory configuration object
+ * @returns {number} - Number of files processed
+ */
+async function processDirectoryCleanout(dirConfig) {
+  logger.info(LogCategory.PROCESSING, `Cleanout: Processing existing files in ${dirConfig.name}`);
+
+  try {
+    // Check if directory exists
+    if (!fs.existsSync(dirConfig.watchPath)) {
+      logger.warn(LogCategory.CONFIG, `Directory not found: ${dirConfig.watchPath}`);
+      return 0;
+    }
+
+    // Get all files in the directory
+    const files = fs.readdirSync(dirConfig.watchPath);
+    const supportedFiles = files
+      .map(file => path.join(dirConfig.watchPath, file))
+      .filter(filePath => isSupportedFile(filePath, dirConfig) && !filePath.endsWith('.processing'))
+      .filter(filePath => {
+        try {
+          return fs.statSync(filePath).isFile();
+        } catch {
+          return false;
+        }
+      })
+      .map(filePath => ({
+        path: filePath,
+        stats: fs.statSync(filePath)
+      }))
+      .sort((a, b) => b.stats.mtime - a.stats.mtime) // Sort by modification time, newest first
+      .map(item => item.path);
+
+    if (supportedFiles.length === 0) {
+      logger.info(LogCategory.PROCESSING, `No existing files to process in ${dirConfig.name}`);
+      return 0;
+    }
+
+    logger.info(LogCategory.PROCESSING, `Found ${supportedFiles.length} file(s) in ${dirConfig.name}:`);
+    supportedFiles.forEach(file => {
+      const stats = fs.statSync(file);
+      const modTime = stats.mtime.toLocaleString();
+      logger.fileStatus(path.basename(file), LogStatus.ARROW, `modified: ${modTime}`);
+    });
+    console.log('');
+
+    // Process files sequentially
+    for (let i = 0; i < supportedFiles.length; i++) {
+      const filePath = supportedFiles[i];
+      console.log(`\n[${i + 1}/${supportedFiles.length}] Processing: ${path.basename(filePath)}`);
+
+      await processFile(filePath);
+
+      // Configured delay between files
+      if (i < supportedFiles.length - 1) {
+        const delay = getConfigValue(config, 'watch.queue.delayBetweenFiles', 2000);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+
+    logger.success(LogCategory.PROCESSING, `Cleanout complete for ${dirConfig.name}`);
+    return supportedFiles.length;
+  } catch (err) {
+    logger.failure(LogCategory.PROCESSING, `Error during cleanout of ${dirConfig.name}: ${err.message}`);
+    return 0;
+  }
+}
+
+/**
  * Process all audio files in a custom directory and exit
  * @param {string} directoryPath - Path to the directory to process
  */
@@ -1258,6 +1613,45 @@ async function processCustomDirectory(directoryPath) {
 }
 
 /**
+ * Process a YouTube URL text file
+ * Reads the URL from the .txt file and processes it via processYouTubeUrl
+ * @param {string} filePath - Path to the .txt file containing a YouTube URL
+ * @param {Object} dirConfig - Directory configuration
+ * @returns {Promise<Object>} - Result with mdFilePath for move tracking
+ */
+async function processYouTubeUrlFile(filePath, dirConfig) {
+  // Read the URL from the text file
+  const content = fs.readFileSync(filePath, 'utf8').trim();
+
+  // Validate it looks like a YouTube URL
+  if (!isYouTubeUrl(content)) {
+    throw new Error(`File does not contain a valid YouTube URL: ${content.substring(0, 100)}`);
+  }
+
+  logger.info(LogCategory.PROCESSING, `Processing YouTube URL from file: ${path.basename(filePath)}`);
+  logger.info(LogCategory.PROCESSING, `URL: ${content}`);
+
+  // Process the YouTube URL
+  const result = await processYouTubeUrl(content, {
+    lowQuality: false,
+    transcriptionService: dirConfig.processingOptions?.transcriptionService || 'scribe',
+    outputPath: dirConfig.outputPath,
+    silentMode: true,
+    model: dirConfig.processingOptions?.model || null,
+    maxSpeakers: dirConfig.processingOptions?.maxSpeakers || null
+  });
+
+  // Return result structure compatible with moveAfterProcessing
+  return {
+    finalName: result.finalName,
+    targetDir: result.targetDir,
+    mdFilePath: result.mdFilePath,
+    // For youtube-url files, we don't have a compressedPath - the .txt file itself gets moved
+    sourceFilePath: filePath
+  };
+}
+
+/**
  * Process a new file using directory-specific configuration
  * @param {string} filePath - Path to the file to process
  */
@@ -1310,53 +1704,78 @@ async function processFile(filePath) {
   
   try {
     console.log('Processing file with directory-specific options...');
-    
-    // Merge directory-specific options with defaults
-    const processingOptions = {
-      silentMode: getConfigValue(config, 'modes.silent.enabled', true),
-      transcriptionService: dirConfig.processingOptions.transcriptionService ||
-                            getConfigValue(config, 'transcription.defaultService', 'scribe'),
-      model: dirConfig.processingOptions.model ||
-             (dirConfig.processingOptions.transcriptionService === 'scribe' ?
-              getConfigValue(config, 'transcription.scribe.model', 'scribe_v1') :
-              getConfigValue(config, 'transcription.whisper.model', 'whisper-1')),
-      maxSpeakers: dirConfig.processingOptions.maxSpeakers ||
-                   getConfigValue(config, 'transcription.scribe.maxSpeakers', null),
-      outputPath: dirConfig.outputPath,
-      compress: dirConfig.processingOptions.compress !== false,
-      bitrate: dirConfig.processingOptions.bitrate ||
-               getConfigValue(config, 'audio.compression.normal.bitrate', '48k'),
-      diarize: dirConfig.processingOptions.diarize !== false,
-      fromGoogleDrive: dirConfig.name.toLowerCase().includes('google drive')
-    };
-    
-    const result = await processVoiceMemo(filePath, processingOptions);
-    
-    console.log('✓ Processing completed successfully');
-    
-    // Handle post-processing based on directory config
-    if (dirConfig.moveAfterProcessing && result && result.finalName) {
-      if (result.compressedPath) {
-        // Move compressed file and delete original
-        await moveToProcessed(
-          filePath,
-          result.compressedPath,
-          result.finalName,
-          result.tempDir,
-          dirConfig.processedPath,
-          { service: processingOptions.transcriptionService, model: processingOptions.model, outputMdPath: result.mdFilePath }
-        );
-      } else {
-        // Fallback to old behavior if no compressed path
-        console.warn('No compressed path returned, falling back to moving original file');
-        await moveToProcessed(
-          filePath,
-          filePath,
-          result.finalName,
-          null,
-          dirConfig.processedPath,
-          { service: processingOptions.transcriptionService, model: processingOptions.model, outputMdPath: result.mdFilePath }
-        );
+
+    let result;
+
+    // Check if this is a YouTube URL file (special file type)
+    if (dirConfig.fileType === 'youtube-url') {
+      // Process as YouTube URL text file
+      result = await processYouTubeUrlFile(filePath, dirConfig);
+      console.log('✓ YouTube URL processing completed successfully');
+
+      // Handle post-processing: move the .txt file to processed directory
+      if (dirConfig.moveAfterProcessing && result && result.finalName) {
+        const processedDir = dirConfig.processedPath;
+        if (processedDir) {
+          // Ensure processed directory exists
+          if (!fs.existsSync(processedDir)) {
+            fs.mkdirSync(processedDir, { recursive: true });
+          }
+          // Move the .txt file to processed directory
+          const destPath = path.join(processedDir, path.basename(filePath));
+          fs.renameSync(filePath, destPath);
+          logger.success(LogCategory.FILE, `Moved to processed: ${path.basename(filePath)}`);
+        }
+      }
+    } else {
+      // Standard audio/video file processing
+      const processingOptions = {
+        silentMode: getConfigValue(config, 'modes.silent.enabled', true),
+        transcriptionService: dirConfig.processingOptions.transcriptionService ||
+                              getConfigValue(config, 'transcription.defaultService', 'scribe'),
+        model: dirConfig.processingOptions.model ||
+               (dirConfig.processingOptions.transcriptionService === 'scribe' ?
+                getConfigValue(config, 'transcription.scribe.model', 'scribe_v1') :
+                getConfigValue(config, 'transcription.whisper.model', 'whisper-1')),
+        maxSpeakers: dirConfig.processingOptions.maxSpeakers ||
+                     getConfigValue(config, 'transcription.scribe.maxSpeakers', null),
+        outputPath: dirConfig.outputPath,
+        compress: dirConfig.processingOptions.compress !== false,
+        bitrate: dirConfig.processingOptions.bitrate ||
+                 getConfigValue(config, 'audio.compression.normal.bitrate', '48k'),
+        diarize: dirConfig.processingOptions.diarize !== false,
+        fromGoogleDrive: dirConfig.name.toLowerCase().includes('google drive'),
+        datePattern: dirConfig.datePattern  // Config-provided date pattern for filename parsing
+      };
+
+      result = await processVoiceMemo(filePath, processingOptions);
+
+      console.log('✓ Processing completed successfully');
+
+      // Handle post-processing based on directory config
+      if (dirConfig.moveAfterProcessing && result && result.finalName) {
+        if (result.compressedPath) {
+          // Move compressed file and delete original
+          await moveToProcessed(
+            filePath,
+            result.compressedPath,
+            result.finalName,
+            result.tempDir,
+            dirConfig.processedPath,
+            { service: processingOptions.transcriptionService, model: processingOptions.model, outputMdPath: result.mdFilePath }
+          );
+        } else {
+          // Fallback to old behavior if no compressed path
+          console.warn('No compressed path returned, falling back to moving original file');
+          await moveToProcessed(
+            filePath,
+            filePath,
+            result.finalName,
+            null,
+            dirConfig.processedPath,
+            { service: processingOptions.transcriptionService, model: processingOptions.model, outputMdPath: result.mdFilePath }
+          );
+        }
       }
     }
     
@@ -1485,10 +1904,23 @@ async function startWatching() {
     process.exit(0);
   }
 
-  // Check config for initial processing modes
+  // Clean up any stale temp directories from previous runs (older than 1 hour)
+  cleanupStaleTempDirs();
+
+  // Process directories with cleanoutOnStartup enabled
+  const cleanoutDirs = directoryConfigs.filter(d => d.enabled && d.cleanoutOnStartup);
+  if (cleanoutDirs.length > 0) {
+    logger.section('Processing Existing Files (cleanoutOnStartup)');
+    for (const dirConfig of cleanoutDirs) {
+      await processDirectoryCleanout(dirConfig);
+    }
+  }
+
+  // Check config for initial processing modes (legacy global cleanout)
   const configCleanout = getConfigValue(config, 'watch.initialProcessing.cleanout', false);
   const configProcessRecent = getConfigValue(config, 'watch.initialProcessing.processRecentVm', false);
 
+  // Legacy --cleanout flag processes all enabled directories
   if (cleanoutMode || configCleanout) {
     await cleanoutUnprocessed();
   }
@@ -1521,10 +1953,18 @@ async function startWatching() {
   const safeIgnoreDirs = Array.isArray(ignoreDirs) ? ignoreDirs : [];
   
   // Build ignore patterns for chokidar
+  // Include processed directories to prevent infinite reprocessing loop
+  const processedPaths = directoryConfigs
+    .filter(d => d.processedPath)
+    .map(d => d.processedPath);
+
   const chokidarIgnored = [
     ...safeIgnorePatterns.map(p => `**/${p}`),
     ...safeIgnoreDirs.map(d => `**${d}/**`),
-    ...safeIgnoreDirs.map(d => `**${d}`)
+    ...safeIgnoreDirs.map(d => `**${d}`),
+    // Exclude processed directories to prevent reprocessing moved files
+    ...processedPaths,
+    ...processedPaths.map(p => `${p}/**`)
   ];
   
   const watcher = chokidar.watch(dirsToWatch, { 
@@ -1549,15 +1989,18 @@ async function startWatching() {
   });
 }
 
-// Display version info on startup
-const versionInfo = getVersionInfo();
-const cleanVersion = versionInfo.version.replace(/"/g, '');
-logger.info(LogCategory.SYSTEM, `summarai v${cleanVersion} starting...`);
-if (versionInfo.buildDate !== 'development') {
-  const cleanBuildTime = versionInfo.buildTime.replace(/"/g, '');
-  const timeOnly = cleanBuildTime.includes('T') ? cleanBuildTime.split('T')[1]?.split('.')[0] : '';
-  logger.debug(LogCategory.SYSTEM, `Build: ${versionInfo.buildDate.replace(/"/g, '')} ${timeOnly}`);
-}
+// Only start the main application if not in speaker mode
+if (!isSpeakerMode) {
+  // Display version info on startup
+  const versionInfo = getVersionInfo();
+  const cleanVersion = versionInfo.version.replace(/"/g, '');
+  logger.info(LogCategory.SYSTEM, `summarai v${cleanVersion} starting...`);
+  if (versionInfo.buildDate !== 'development') {
+    const cleanBuildTime = versionInfo.buildTime.replace(/"/g, '');
+    const timeOnly = cleanBuildTime.includes('T') ? cleanBuildTime.split('T')[1]?.split('.')[0] : '';
+    logger.debug(LogCategory.SYSTEM, `Build: ${versionInfo.buildDate.replace(/"/g, '')} ${timeOnly}`);
+  }
 
-// Start the application
-startWatching();
+  // Start the application
+  startWatching();
+}

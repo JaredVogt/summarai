@@ -99,25 +99,55 @@ export function getNomenclatureNote() {
 }
 
 /**
- * Gets additional instructions from instructions.md
+ * Gets additional instructions from instructions.md or source-type-specific instructions
+ * @param {string} sourceType - Optional source type ('youtube', 'voicememo', etc.)
+ * @param {Object} metadata - Optional metadata for template substitution
  * @returns {string} - Instruction text
  */
-export function getInstructionsNote() {
+export function getInstructionsNote(sourceType = null, metadata = {}) {
   let instructions = '';
-  
-  // First try to load from external file (same directory as executable)
-  try {
-    instructions = fs.readFileSync('./instructions.md', 'utf8').trim();
-  } catch {
-    // If external file doesn't exist, try embedded source file
+
+  // Try source-type-specific instructions first
+  if (sourceType) {
+    const sourceSpecificFile = `instructions-${sourceType}.md`;
     try {
-      instructions = fs.readFileSync(path.join(__dirname, 'instructions.md'), 'utf8').trim();
+      instructions = fs.readFileSync(`./${sourceSpecificFile}`, 'utf8').trim();
     } catch {
-      // If neither exists, use the embedded default content
-      instructions = DEFAULT_INSTRUCTIONS.trim();
+      try {
+        instructions = fs.readFileSync(path.join(__dirname, sourceSpecificFile), 'utf8').trim();
+      } catch {
+        // Fall through to default instructions
+      }
     }
   }
-  
+
+  // Fall back to default instructions if source-specific not found
+  if (!instructions) {
+    try {
+      instructions = fs.readFileSync('./instructions.md', 'utf8').trim();
+    } catch {
+      try {
+        instructions = fs.readFileSync(path.join(__dirname, 'instructions.md'), 'utf8').trim();
+      } catch {
+        instructions = DEFAULT_INSTRUCTIONS.trim();
+      }
+    }
+  }
+
+  // Simple template substitution for metadata
+  if (metadata && Object.keys(metadata).length > 0) {
+    // Replace {{#if varName}}...{{/if}} blocks
+    instructions = instructions.replace(/\{\{#if\s+(\w+)\}\}([\s\S]*?)\{\{\/if\}\}/g, (match, varName, content) => {
+      return metadata[varName] ? content : '';
+    });
+    // Replace {{varName}} placeholders
+    for (const [key, value] of Object.entries(metadata)) {
+      if (value !== null && value !== undefined) {
+        instructions = instructions.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(value));
+      }
+    }
+  }
+
   if (instructions) {
     instructions = 'The following are additional instructions to guide your response:\n' + instructions + '\n';
   }
@@ -163,25 +193,41 @@ function getContentTypeFromPath(filePath) {
  * @param {string} outputDir - Base output directory
  * @param {string} originalFileName - Original filename to preserve date prefix from
  * @param {string} filePathToCopy - Actual file path to copy (defaults to filePath) - use for compressed/processed files
+ * @param {Object} sourceMetadata - Optional metadata from input handlers (YouTube, etc.)
  * @returns {Promise<Object>} - Result with finalName, targetDir, and mdFilePath
  */
-export async function sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, outputDir, originalFileName = null, filePathToCopy = null) {
+export async function sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, outputDir, originalFileName = null, filePathToCopy = null, sourceMetadata = null) {
   // Get API key at runtime, after dotenv has loaded it
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-  
+
   if (!ANTHROPIC_API_KEY) {
     logger.failure(LogCategory.API, 'ANTHROPIC_API_KEY not set');
     return;
   }
   const nomenclatureNote = getNomenclatureNote();
-  const instructionsNote = getInstructionsNote();
-  
-  // Determine the content type based on file extension
-  const contentType = getContentTypeFromPath(filePath);
-  
+
+  // Determine source type and get appropriate instructions
+  const sourceType = sourceMetadata?.sourceType || null;
+  const instructionsMetadata = sourceMetadata ? {
+    videoTitle: sourceMetadata.title,
+    videoDuration: sourceMetadata.duration ? `${Math.floor(sourceMetadata.duration / 60)}:${(sourceMetadata.duration % 60).toString().padStart(2, '0')}` : null,
+    videoUrl: sourceMetadata.videoUrl,
+    uploader: sourceMetadata.uploader
+  } : {};
+  const instructionsNote = getInstructionsNote(sourceType, instructionsMetadata);
+
+  // Determine the content type based on file extension or source type
+  const contentType = sourceType === 'youtube' ? 'youtube' : getContentTypeFromPath(filePath);
+
   // Customize prompt based on content type
   let prompt;
-  if (contentType === 'video') {
+  if (contentType === 'youtube') {
+    // For YouTube, include both primary and fallback transcripts if available
+    prompt = `${instructionsNote}${nomenclatureNote}Here is the transcription from a YouTube video:\n\n## Primary Transcript (ElevenLabs Scribe - most accurate)\n${transcript}`;
+    if (sourceMetadata?.fallbackTranscript) {
+      prompt += `\n\n## Reference Transcript (YouTube API - for cross-reference)\n${sourceMetadata.fallbackTranscript}`;
+    }
+  } else if (contentType === 'video') {
     prompt = `${instructionsNote}${nomenclatureNote}Here is the transcription from a video file:\n${transcript}`;
   } else {
     prompt = `${instructionsNote}${nomenclatureNote}Here is the audio transcription:\n${transcript}`;

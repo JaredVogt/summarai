@@ -333,3 +333,77 @@ export async function validateFileIntegrity(filePath, validationLevel = 'moov') 
     }
   }
 }
+
+/**
+ * Validates speaker profile name
+ * @param {string} name - Profile name to validate
+ * @returns {string} - Sanitized profile name
+ * @throws {ValidationError} - If name is invalid
+ */
+export function validateProfileName(name) {
+  if (!name || typeof name !== 'string') {
+    throw new ValidationError('Profile name must be a non-empty string', 'profileName');
+  }
+
+  // Trim and normalize whitespace
+  const trimmed = name.trim().replace(/\s+/g, ' ');
+
+  if (trimmed.length < 2) {
+    throw new ValidationError('Profile name must be at least 2 characters', 'profileName');
+  }
+
+  if (trimmed.length > 50) {
+    throw new ValidationError('Profile name must be 50 characters or less', 'profileName');
+  }
+
+  // Only allow alphanumeric, spaces, hyphens, underscores, and apostrophes
+  if (!/^[a-zA-Z0-9\s\-_']+$/.test(trimmed)) {
+    throw new ValidationError(
+      'Profile name contains invalid characters. Use letters, numbers, spaces, hyphens, underscores, or apostrophes.',
+      'profileName'
+    );
+  }
+
+  return trimmed;
+}
+
+/**
+ * Validates speaker identification options
+ * @param {Object} options - Speaker ID options
+ * @returns {Object} - Validated options
+ * @throws {ValidationError} - If options are invalid
+ */
+export function validateSpeakerIdOptions(options = {}) {
+  const validated = {};
+
+  // Validate threshold (0.0 - 1.0)
+  if (options.threshold !== undefined) {
+    const threshold = parseFloat(options.threshold);
+    if (isNaN(threshold) || threshold < 0 || threshold > 1) {
+      throw new ValidationError(
+        'Speaker identification threshold must be between 0.0 and 1.0',
+        'threshold'
+      );
+    }
+    validated.threshold = threshold;
+  }
+
+  // Validate timeout (positive integer, reasonable range)
+  if (options.timeout !== undefined) {
+    const timeout = parseInt(options.timeout);
+    if (isNaN(timeout) || timeout < 1000 || timeout > 300000) {
+      throw new ValidationError(
+        'Speaker identification timeout must be between 1000ms and 300000ms (5 minutes)',
+        'timeout'
+      );
+    }
+    validated.timeout = timeout;
+  }
+
+  // Validate profiles directory path if provided
+  if (options.profilesDir) {
+    validated.profilesDir = validateFilePath(options.profilesDir, false);
+  }
+
+  return validated;
+}

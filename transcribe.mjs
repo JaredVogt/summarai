@@ -21,9 +21,19 @@ import { appendRecord, loadIndex } from './src/processHistory.mjs';
 import {
   ProcessingError,
   FileSystemError,
+  ValidationError,
   handleError,
   withErrorHandling
 } from './src/errors.mjs';
+
+// YouTube input handler (lazy loaded to avoid circular deps)
+let youtubeHandler = null;
+async function getYouTubeHandler() {
+  if (!youtubeHandler) {
+    youtubeHandler = await import('./inputHandlers/youtube.mjs');
+  }
+  return youtubeHandler;
+}
 import {
   validateFilePath,
   validateAudioOptions,
@@ -46,6 +56,21 @@ try {
 }
 
 const OUTPUT_DIR = getConfigValue(config, 'directories.output', './output');
+
+/**
+ * Generate a unique temp directory path in system temp
+ * Avoids Google Drive sync/permission issues by always using local temp
+ * @param {string} filePath - Original file path for naming context
+ * @returns {string} - Unique temp directory path
+ */
+function generateUniqueTempDir(filePath) {
+  const timestamp = Date.now();
+  const randomSuffix = Math.random().toString(36).substring(2, 8);
+  const sanitizedName = path.basename(filePath, path.extname(filePath))
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .substring(0, 50);
+  return path.join(os.tmpdir(), 'summarai_temp', `${timestamp}_${sanitizedName}_${randomSuffix}`);
+}
 
 // History is now tracked via NDJSON (see src/processHistory.mjs)
 
@@ -121,6 +146,107 @@ async function transcribeLatestVoiceMemo(transcriptionService) {
   await processVoiceMemo(files[selected].fullPath, { transcriptionService });
 }
 
+/**
+ * Parse a time string based on the specified format
+ * @param {string} timeStr - The time string to parse
+ * @param {string} format - The format: 'HHMMSS', 'HHMM', 'HH:MM:SS', 'HH:MM'
+ * @returns {Object|null} - { hour, min, sec } or null
+ */
+function parseTimeString(timeStr, format) {
+  if (!timeStr) return null;
+
+  switch (format) {
+    case 'HHMMSS':
+      if (timeStr.length >= 6) {
+        return { hour: timeStr.slice(0, 2), min: timeStr.slice(2, 4), sec: timeStr.slice(4, 6) };
+      }
+      break;
+    case 'HHMM':
+      if (timeStr.length >= 4) {
+        return { hour: timeStr.slice(0, 2), min: timeStr.slice(2, 4), sec: '00' };
+      }
+      break;
+    case 'HH:MM:SS': {
+      const hmsMatch = timeStr.match(/(\d{2}):(\d{2}):(\d{2})/);
+      if (hmsMatch) {
+        return { hour: hmsMatch[1], min: hmsMatch[2], sec: hmsMatch[3] };
+      }
+      break;
+    }
+    case 'HH:MM': {
+      const hmMatch = timeStr.match(/(\d{2}):(\d{2})/);
+      if (hmMatch) {
+        return { hour: hmMatch[1], min: hmMatch[2], sec: '00' };
+      }
+      break;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Extract date/time components from filename using config pattern or fallback patterns
+ * @param {string} filename - The original filename
+ * @param {Object|null} datePattern - Optional config-provided date pattern
+ * @returns {Object|null} - { year, month, day, hour, min, sec } or null
+ */
+function extractDateTimeFromFilename(filename, datePattern = null) {
+  // 1. Try config-provided pattern first
+  if (datePattern?.regex) {
+    try {
+      const regex = new RegExp(datePattern.regex);
+      const match = filename.match(regex);
+
+      if (match?.groups) {
+        const { year, month, day, time } = match.groups;
+        const timeComponents = parseTimeString(time, datePattern.timeFormat || 'HHMMSS');
+
+        if (year && month && day && timeComponents) {
+          return { year, month, day, ...timeComponents };
+        }
+      }
+    } catch (err) {
+      console.warn(`Invalid datePattern regex: ${err.message}`);
+    }
+  }
+
+  // 2. Fallback: YYYYMMDD_HHMMSS pattern
+  let match = filename.match(/(\d{8})[ _-](\d{6})/);
+  if (match) {
+    const [, dateStr, timeStr] = match;
+    return {
+      year: dateStr.slice(0, 4),
+      month: dateStr.slice(4, 6),
+      day: dateStr.slice(6, 8),
+      hour: timeStr.slice(0, 2),
+      min: timeStr.slice(2, 4),
+      sec: timeStr.slice(4, 6)
+    };
+  }
+
+  // 3. Fallback: YYMMDD_HHMM pattern
+  match = filename.match(/(\d{6})[ _-](\d{4})/);
+  if (match) {
+    const [, dateStr, timeStr] = match;
+    const yyStr = dateStr.slice(0, 2);
+    const yy = parseInt(yyStr, 10);
+    const year = yy < 50 ? `20${yyStr}` : `19${yyStr}`;
+
+    return {
+      year,
+      month: dateStr.slice(2, 4),
+      day: dateStr.slice(4, 6),
+      hour: timeStr.slice(0, 2),
+      min: timeStr.slice(2, 4),
+      sec: '00'
+    };
+  }
+
+  // 4. No pattern matched
+  return null;
+}
+
 // Exportable main workflow for automation
 export async function processVoiceMemo(filePath, options = {}) {
   const {
@@ -132,7 +258,8 @@ export async function processVoiceMemo(filePath, options = {}) {
     maxSpeakers = null,
     fromGoogleDrive = false,
     outputPath = null,
-    createSegmentsFile = null  // Allow override, but default to config value
+    createSegmentsFile = null,  // Allow override, but default to config value
+    datePattern = null  // Config-provided date pattern for filename parsing
   } = options;
 
   // Always have a safe filename available for logging/error context,
@@ -191,43 +318,11 @@ export async function processVoiceMemo(filePath, options = {}) {
     let recordingDateTime = null;
     let recordingDateTimePrefix = null;
 
-    // Try to extract date/time from filename pattern (common for voice memos)
-    // Support both YYYYMMDD_HHMMSS and YYMMDD_HHMM formats
-    let dtMatch = originalFileName.match(/(\d{8})[ _-](\d{6})/); // YYYYMMDD_HHMMSS
-    let isShortFormat = false;
+    // Extract date/time from filename using config pattern or fallback patterns
+    const extracted = extractDateTimeFromFilename(originalFileName, datePattern);
 
-    if (!dtMatch) {
-      dtMatch = originalFileName.match(/(\d{6})[ _-](\d{4})/); // YYMMDD_HHMM
-      isShortFormat = true;
-    }
-
-    if (dtMatch) {
-      const [_, dateStr, timeStr] = dtMatch;
-
-      let year, month, day, hour, min, sec;
-
-      if (isShortFormat) {
-        // YYMMDD_HHMM format
-        const yyStr = dateStr.slice(0, 2);
-        month = dateStr.slice(2, 4);
-        day = dateStr.slice(4, 6);
-        hour = timeStr.slice(0, 2);
-        min = timeStr.slice(2, 4);
-        sec = '00'; // Default to 00 seconds
-
-        // Convert 2-digit year to 4-digit (assuming 20XX for now)
-        const yy = parseInt(yyStr, 10);
-        year = yy < 50 ? `20${yyStr}` : `19${yyStr}`;
-      } else {
-        // YYYYMMDD_HHMMSS format
-        year = dateStr.slice(0, 4);
-        month = dateStr.slice(4, 6);
-        day = dateStr.slice(6, 8);
-        hour = timeStr.slice(0, 2);
-        min = timeStr.slice(2, 4);
-        sec = timeStr.slice(4, 6);
-      }
-
+    if (extracted) {
+      const { year, month, day, hour, min, sec } = extracted;
       recordingDateTimePrefix = `${year}${month}${day}_${hour}${min}${sec}`;
       recordingDateTime = `${year}-${month}-${day}T${hour}:${min}:${sec}-07:00`;
     } else {
@@ -241,16 +336,14 @@ export async function processVoiceMemo(filePath, options = {}) {
       const min = String(now.getMinutes()).padStart(2, '0');
       const sec = String(now.getSeconds()).padStart(2, '0');
 
-      // Format for display and filename
       recordingDateTimePrefix = `${year}${month}${day}_${hour}${min}${sec}`;
       recordingDateTime = now.toISOString();
     }
 
-    // Always convert to temp AAC
-    // For Google Drive files, use a temp directory that can be accessed later
-    tempDir = fromGoogleDrive
-      ? path.join(path.dirname(filePath), 'temp')
-      : path.join(os.tmpdir(), 'summarai_temp', path.basename(filePath, path.extname(filePath)));
+    // Always convert to temp AAC using system temp directory
+    // This avoids permission issues and sync delays with cloud storage (Google Drive, iCloud, etc.)
+    tempDir = generateUniqueTempDir(filePath);
+    logger.debug(LogCategory.PROCESSING, `Using temp directory: ${tempDir}`);
 
     const tempAACPath = await convertToTempAAC(filePath, tempDir, {
       forceAudioExtraction: forceVideoMode,
@@ -424,7 +517,17 @@ export async function processVoiceMemo(filePath, options = {}) {
     // If from Google Drive, return the compressed file path for moving
     if (fromGoogleDrive && usedTemp) {
       // Validate that the compressed file exists before returning it
-      if (!fs.existsSync(tempAACPath)) {
+      // Retry a few times in case file write is still being flushed
+      let fileExists = fs.existsSync(tempAACPath);
+      if (!fileExists) {
+        logger.debug(LogCategory.PROCESSING, `Compressed file not immediately found, retrying...`);
+        for (let i = 0; i < 3 && !fileExists; i++) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+          fileExists = fs.existsSync(tempAACPath);
+        }
+      }
+
+      if (!fileExists) {
         logger.failure(LogCategory.PROCESSING, `Compressed file not found at expected path: ${tempAACPath}`);
         throw new ProcessingError(
           `Google Drive file processing failed: compressed file not found`,
@@ -449,7 +552,7 @@ export async function processVoiceMemo(filePath, options = {}) {
       if (!fromGoogleDrive) {
         logger.debug(LogCategory.PROCESSING, `Non-Google Drive file: cleaning up temp files`);
       } else {
-        logger.warning(LogCategory.PROCESSING, `Google Drive file but no temp used - compression may have failed`);
+        logger.warn(LogCategory.PROCESSING, `Google Drive file but no temp used - compression may have failed`);
       }
       if (usedTemp) cleanupTempDir(tempDir);
       return { finalName, targetDir, transcript, segmentsContent, mdFilePath };
@@ -499,6 +602,249 @@ export async function processVoiceMemo(filePath, options = {}) {
         { filePath, originalError: error.message, context }
       );
     }
+  }
+}
+
+/**
+ * Process a YouTube URL through the full pipeline
+ * Downloads audio, transcribes with Scribe, summarizes with Claude, outputs to Obsidian
+ *
+ * @param {string} url - YouTube URL or video ID
+ * @param {Object} options - Processing options
+ * @param {boolean} [options.lowQuality=false] - Use lower quality audio
+ * @param {string} [options.transcriptionService='scribe'] - Transcription service
+ * @param {string} [options.outputPath] - Custom output directory
+ * @param {boolean} [options.silentMode=false] - Skip interactive prompts
+ * @returns {Promise<Object>} - Result with finalName, targetDir, mdFilePath
+ */
+export async function processYouTubeUrl(url, options = {}) {
+  const {
+    lowQuality = false,
+    transcriptionService = 'scribe',
+    outputPath = null,
+    silentMode = false,
+    model = null,
+    maxSpeakers = null
+  } = options;
+
+  let tempDir = null;
+  let usedTemp = false;
+
+  try {
+    // 1. Get the YouTube handler and process the URL
+    const ytHandler = await getYouTubeHandler();
+    const normalizedInput = await ytHandler.processYouTubeUrl(url, { lowQuality });
+
+    const { audioPath, metadata, fallbackTranscript } = normalizedInput;
+
+    // 2. Convert audio to optimized format
+    tempDir = path.join(os.tmpdir(), 'summarai_youtube', metadata.videoId);
+    const tempAACPath = await convertToTempAAC(audioPath, tempDir, { lowQuality });
+    usedTemp = true;
+
+    logger.processing(LogCategory.PROCESSING, `Processing YouTube video: ${metadata.title}`);
+
+    // Get file size for logging
+    const tempStats = fs.statSync(tempAACPath);
+    const fileSizeMB = tempStats.size / (1024 * 1024);
+    logger.info(LogCategory.PROCESSING, `Audio file size: ${fileSizeMB.toFixed(2)} MB`);
+
+    // 3. Transcribe with selected service
+    logger.info(LogCategory.PROCESSING, `Using transcription service: ${transcriptionService === 'whisper' ? 'OpenAI Whisper' : 'ElevenLabs Scribe'}`);
+
+    let transcriptionData;
+    let transcript;
+    let segmentsContent;
+    let usedModel = null;
+
+    if (transcriptionService === 'whisper') {
+      // Whisper path
+      const maxSizeMB = 22;
+      let audioPathsToProcess;
+      const chunksDir = path.join(tempDir, 'chunks');
+
+      if (fileSizeMB > maxSizeMB) {
+        audioPathsToProcess = await splitAudioFile(tempAACPath, chunksDir, maxSizeMB);
+        console.log(`Split audio into ${audioPathsToProcess.length} chunks`);
+      } else {
+        audioPathsToProcess = [tempAACPath];
+      }
+
+      transcriptionData = await transcribeWithWhisper(audioPathsToProcess, true);
+      transcript = transcriptionData.text;
+      usedModel = getConfigValue(config, 'transcription.whisper.model', 'whisper-1');
+
+      segmentsContent = "## transcription with timestamps\n";
+      if (transcriptionData.segments && Array.isArray(transcriptionData.segments)) {
+        transcriptionData.segments.forEach((segment) => {
+          const startTime = formatTimestamp(segment.start);
+          const endTime = formatTimestamp(segment.end);
+          segmentsContent += `[${startTime} - ${endTime}] ${segment.text}\n`;
+        });
+      }
+    } else {
+      // Scribe path (default)
+      const defaultModel = getConfigValue(config, 'transcription.scribe.model', 'scribe_v1');
+      const defaultMaxSpeakers = getConfigValue(config, 'transcription.scribe.maxSpeakers', null);
+      const selectedModel = model || defaultModel;
+      const selectedMaxSpeakers = maxSpeakers !== undefined ? maxSpeakers : defaultMaxSpeakers;
+      const diarizeSetting = getConfigValue(config, 'transcription.scribe.diarize', true);
+
+      transcriptionData = await transcribeWithScribe(tempAACPath, {
+        model: selectedModel,
+        maxSpeakers: selectedMaxSpeakers,
+        diarize: diarizeSetting,
+        tagAudioEvents: true,
+        verbose: true
+      });
+
+      transcript = transcriptionData.text;
+      segmentsContent = createSegmentsContent(transcriptionData, metadata.videoUrl);
+      usedModel = selectedModel;
+    }
+
+    logger.success(LogCategory.PROCESSING, 'Transcription completed');
+    logger.info(LogCategory.PROCESSING, `Transcript length: ${transcript.length} characters, ${transcript.split(/\s+/).length} words`);
+
+    // 4. Generate date/time prefix from current time (YouTube videos use current processing time)
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hour = String(now.getHours()).padStart(2, '0');
+    const min = String(now.getMinutes()).padStart(2, '0');
+    const sec = String(now.getSeconds()).padStart(2, '0');
+
+    const recordingDateTimePrefix = `${year}${month}${day}_${hour}${min}${sec}`;
+    const recordingDateTime = now.toISOString();
+
+    // 5. Send to Claude with YouTube metadata
+    const sourceMetadata = {
+      ...metadata,
+      fallbackTranscript
+    };
+
+    // Get YouTube-specific output path from config, fallback to general output
+    const youtubeOutputPath = getConfigValue(config, 'directories.youtube.outputPath', null);
+    const defaultOutputPath = getConfigValue(config, 'directories.watch.voiceMemos.outputPath', './output');
+    const outputDir = outputPath || youtubeOutputPath || path.join(defaultOutputPath, 'Youtube');
+
+    // Ensure output directory exists
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    const { finalName, targetDir, mdFilePath } = await sendToClaude(
+      transcript,
+      audioPath,
+      recordingDateTimePrefix,
+      recordingDateTime,
+      outputDir,
+      `${metadata.title}.m4a`,
+      tempAACPath,
+      sourceMetadata
+    );
+
+    // 6. Append segments to markdown file
+    if (mdFilePath && fs.existsSync(mdFilePath)) {
+      fs.appendFileSync(mdFilePath, '\n\n' + segmentsContent);
+      console.log(`Timestamps appended to: ${mdFilePath}`);
+    }
+
+    // 7. Save audio and video files with same name as markdown
+    let destAudioPath = null;
+    let destVideoPath = null;
+
+    if (mdFilePath) {
+      const baseName = path.basename(mdFilePath, '.md');
+
+      // Copy audio file to output directory with matching name
+      destAudioPath = path.join(outputDir, `${baseName}.m4a`);
+      try {
+        fs.copyFileSync(tempAACPath, destAudioPath);
+        console.log(`Audio saved: ${destAudioPath}`);
+      } catch (err) {
+        logger.warn(LogCategory.PROCESSING, `Failed to save audio file: ${err.message}`);
+      }
+
+      // Download and save video file with matching name
+      try {
+        const ytHandler = await getYouTubeHandler();
+        destVideoPath = await ytHandler.downloadYouTubeVideo(url, {
+          outputDir: outputDir,
+          outputFilename: baseName,
+          format: 'mp4'
+        });
+        console.log(`Video saved: ${destVideoPath}`);
+      } catch (err) {
+        logger.warn(LogCategory.PROCESSING, `Failed to download video: ${err.message}`);
+      }
+    }
+
+    // 8. Record in process history
+    try {
+      const sourceStats = fs.statSync(audioPath);
+      appendRecord(config, {
+        processedAt: recordingDateTime,
+        sourcePath: url,
+        sourceName: metadata.title,
+        sourceType: 'youtube',
+        videoId: metadata.videoId,
+        videoUrl: metadata.videoUrl,
+        destAudioPath: destAudioPath,
+        destVideoPath: destVideoPath,
+        outputMdPath: mdFilePath || null,
+        service: transcriptionService,
+        model: usedModel,
+        sizeSourceBytes: sourceStats?.size ?? null,
+        sizeDestBytes: null
+      });
+    } catch {}
+
+    // 9. Cleanup temp files
+    if (usedTemp) cleanupTempDir(tempDir);
+
+    // Also cleanup the downloaded audio file from temp
+    try {
+      if (fs.existsSync(audioPath)) {
+        fs.unlinkSync(audioPath);
+      }
+    } catch {}
+
+    logger.success(LogCategory.PROCESSING, `YouTube video processed: ${metadata.title}`);
+
+    return { finalName, targetDir, transcript, segmentsContent, mdFilePath, metadata };
+
+  } catch (error) {
+    if (usedTemp && tempDir) cleanupTempDir(tempDir);
+
+    const errorMessage = error.message || String(error);
+    throw new ProcessingError(
+      `Failed to process YouTube video: ${errorMessage}`,
+      { url, originalError: errorMessage }
+    );
+  }
+}
+
+/**
+ * Check if a string looks like a YouTube URL or video ID
+ * @param {string} input - String to check
+ * @returns {boolean} - True if it looks like a YouTube URL or ID
+ */
+export function isYouTubeUrl(input) {
+  if (!input || typeof input !== 'string') return false;
+  const trimmed = input.trim();
+
+  // Check for video ID pattern (11 characters)
+  if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) return true;
+
+  // Check for YouTube URLs
+  try {
+    const url = new URL(trimmed.startsWith('http') ? trimmed : `https://${trimmed}`);
+    const hosts = ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'];
+    return hosts.includes(url.hostname);
+  } catch {
+    return false;
   }
 }
 

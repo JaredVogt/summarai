@@ -104,7 +104,25 @@ try {
     fs.copyFileSync('nomenclature.txt', path.join(OUTPUT_DIR, 'nomenclature.txt'));
     console.log('✓ Copied nomenclature.txt');
   }
-  
+
+  // Copy pyannote directory (Python scripts for speaker identification)
+  const pyannoteDir = path.join(__dirname, 'pyannote');
+  const pyannoteOutDir = path.join(OUTPUT_DIR, 'pyannote');
+  if (fs.existsSync(pyannoteDir)) {
+    fs.mkdirSync(pyannoteOutDir, { recursive: true });
+
+    // Copy Python files (not __pycache__ or .venv)
+    const pyannoteFiles = ['speaker_id.py', 'setup_check.py', 'requirements.txt', '__init__.py'];
+    for (const file of pyannoteFiles) {
+      const srcPath = path.join(pyannoteDir, file);
+      if (fs.existsSync(srcPath)) {
+        fs.copyFileSync(srcPath, path.join(pyannoteOutDir, file));
+      }
+    }
+    console.log('✓ Copied pyannote/ (speaker identification scripts)');
+    console.log('  Note: Run `cd release/pyannote && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt` to set up Python dependencies');
+  }
+
   // Create .env.example
   const envExample = `# API Keys Configuration
 # Copy this file to .env and fill in your actual API keys
@@ -117,6 +135,11 @@ ANTHROPIC_API_KEY=your_anthropic_api_key_here
 
 # ElevenLabs API Key for Scribe transcription
 ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
+
+# HuggingFace Token for Speaker Identification (optional)
+# Get token at: https://huggingface.co/settings/tokens
+# Accept model terms at: https://huggingface.co/pyannote/embedding
+HUGGINGFACE_TOKEN=your_huggingface_token_here
 `;
   
   fs.writeFileSync(path.join(OUTPUT_DIR, '.env.example'), envExample);
@@ -193,6 +216,33 @@ When running this executable for the first time, macOS will show a security warn
 - \`--cleanout\` - Process all existing files in Google Drive unprocessed folder
 - \`--dry-run\` - Preview what would be processed without actually processing
 - \`--help\` - Show detailed help
+
+### Speaker Identification Setup (Optional)
+
+To enable automatic speaker naming (replace "Speaker 0/1" with actual names):
+
+\`\`\`bash
+# 1. Create Python virtual environment and install dependencies
+cd pyannote
+python3 -m venv .venv
+source .venv/bin/activate
+pip3 install -r requirements.txt
+
+# 2. Add HuggingFace token to ~/.env
+# Get token at: https://huggingface.co/settings/tokens
+# Accept model terms at: https://huggingface.co/pyannote/embedding
+echo "HUGGINGFACE_TOKEN=your_token_here" >> ~/.env
+
+# 3. Enable in config.yaml
+# Set speakerIdentification.enabled: true
+\`\`\`
+
+Speaker commands:
+\`\`\`bash
+./summarai speaker check              # Verify setup
+./summarai speaker enroll "Name" file.wav  # Add speaker
+./summarai speaker list               # List enrolled speakers
+\`\`\`
 
 ## File Processing
 
@@ -272,6 +322,7 @@ For issues or questions, see the main project repository.
   console.log(`   - nomenclature.txt (customizable terminology)`);
   console.log(`   - .env.example`);
   console.log(`   - README.md`);
+  console.log(`   - pyannote/ (speaker identification scripts)`);
   
   // Create zip archive if requested
   if (CREATE_ZIP) {

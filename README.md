@@ -38,10 +38,18 @@ A comprehensive system for automatically processing voice memos and audio/video 
 - **File Size Limits**: Configurable limits to prevent resource exhaustion
 - **Filename Sanitization**: Automatic cleaning of unsafe characters in filenames
 
+### Speaker Identification
+- **Voice Fingerprinting**: Enroll speaker profiles using Pyannote embeddings for accurate identification
+- **Automatic Speaker Naming**: Replaces generic "Speaker 0/1" labels with enrolled speaker names
+- **Configurable Confidence Threshold**: Adjustable matching sensitivity (default 0.7)
+- **Graceful Fallback**: Falls back to generic labels if no match found or system unavailable
+- **CLI Management**: Easy profile enrollment, listing, and deletion via command line
+
 ### Advanced Features
 - **Model Version Checking**: Automatically checks for newer Claude models with 24-hour caching
 - **Flexible Audio Quality**: Normal (48k/16kHz) or low quality (24k/8kHz) compression options
 - **Large File Chunking**: Automatic splitting of large audio files for processing
+- **Silence Detection**: Preview silence sections in audio files with configurable thresholds (`--silence-preview`)
 - **Configuration System**: Centralized YAML configuration with environment variable overrides
 - **Speed Optimization**: Configurable audio speed adjustment (default 1.5x) for faster processing
 - **Error Handling**: Comprehensive error handling with detailed logging and recovery mechanisms
@@ -94,6 +102,26 @@ node transcribe.mjs --low
 
 # Run in silent mode (no prompts)
 node transcribe.mjs --silent
+
+# Preview silence detection (analyze without modifying)
+node summarai.mjs --silence-preview /path/to/audio.mp3
+```
+
+### Speaker Identification Commands
+Manage speaker profiles for automatic speaker naming:
+
+```bash
+# Check environment setup
+node summarai.mjs speaker check
+
+# Enroll a new speaker
+node summarai.mjs speaker enroll "Jared" ~/voice-sample.wav
+
+# List enrolled speakers
+node summarai.mjs speaker list
+
+# Delete a speaker profile
+node summarai.mjs speaker delete "Jared"
 ```
 
 ### Automatic File Watching
@@ -244,6 +272,8 @@ Migration from legacy JSON array:
 - **Node.js** v18+ or **Bun** runtime
 - **ffmpeg** installed and available in PATH
 - **API keys** for the services you want to use (Anthropic, ElevenLabs, OpenAI)
+- **Python 3.8+** (optional, for speaker identification feature)
+- **HuggingFace token** (optional, for speaker identification)
 
 ## 🛠️ Installation
 
@@ -375,6 +405,136 @@ The system will warn you when approaching limits:
 ```bash
 # Check subscription status anytime
 node elevenLabsMonitor.mjs
+```
+
+## 🎤 Speaker Identification
+
+The system includes optional speaker identification powered by Pyannote embeddings. When enabled, it automatically replaces generic "Speaker 0/1" labels with the actual names of enrolled speakers.
+
+### How It Works
+
+1. **Enrollment**: Record a 10-30 second voice sample for each person you want to identify
+2. **Fingerprinting**: The system creates a voice embedding (fingerprint) using Pyannote
+3. **Identification**: During transcription, audio segments are compared against enrolled profiles
+4. **Matching**: If a segment matches a profile above the confidence threshold, the speaker name is applied
+
+### Setup Requirements
+
+**1. Install Python Dependencies**
+
+Speaker identification requires Python 3.8+ with Pyannote dependencies. On modern macOS, you must use a virtual environment:
+
+```bash
+cd pyannote
+python3 -m venv .venv
+source .venv/bin/activate
+pip3 install -r requirements.txt
+```
+
+**2. Configure HuggingFace Token**
+
+Speaker identification uses Pyannote models from HuggingFace, which require authentication:
+
+1. Create account at https://huggingface.co
+2. Accept the model terms at https://huggingface.co/pyannote/embedding
+3. Create a token at https://huggingface.co/settings/tokens
+4. Add to your environment:
+   ```bash
+   echo "HUGGINGFACE_TOKEN=hf_your_token_here" >> ~/.env
+   ```
+
+**3. Enable in Configuration**
+```yaml
+# config.yaml
+speakerIdentification:
+  enabled: true
+  profilesDir: ~/.summarai/profiles
+  threshold: 0.70
+```
+
+### CLI Commands
+
+```bash
+# Check if speaker identification is available
+node summarai.mjs speaker check
+
+# Enroll a new speaker profile
+node summarai.mjs speaker enroll "Jared" ~/voice-samples/jared.wav
+
+# List all enrolled speakers
+node summarai.mjs speaker list
+
+# Delete a speaker profile
+node summarai.mjs speaker delete "Jared"
+
+# View speaker command help
+node summarai.mjs speaker
+```
+
+### Enrollment Tips
+
+- **Sample Length**: 10-30 seconds of clear speech works best
+- **Audio Quality**: Use clear recordings with minimal background noise
+- **Single Speaker**: Each sample should contain only one person speaking
+- **Natural Speech**: Use conversational tone rather than reading
+- **File Formats**: Supports WAV, MP3, M4A, and other common audio formats
+
+### Configuration Options
+
+```yaml
+speakerIdentification:
+  # Enable/disable speaker identification
+  enabled: true
+
+  # Directory for voice profiles (fingerprints)
+  profilesDir: ~/.summarai/profiles
+
+  # Minimum confidence threshold for speaker matching (0.0-1.0)
+  # Higher = more strict, fewer false positives
+  # Lower = more matches, but may have errors
+  threshold: 0.70
+
+  # Python environment settings
+  python:
+    path: ./pyannote/.venv/bin/python3  # Path to Python in venv
+    timeout: 60000                      # Timeout in milliseconds
+
+  # HuggingFace token (can also use HUGGINGFACE_TOKEN env var)
+  huggingfaceToken: null
+```
+
+### Threshold Tuning
+
+The confidence threshold controls how strict the matching is:
+
+| Threshold | Behavior |
+|-----------|----------|
+| 0.50 | Very loose matching, more false positives |
+| 0.70 | Balanced (default), good accuracy |
+| 0.80 | Strict matching, fewer false positives |
+| 0.90 | Very strict, may miss some matches |
+
+### Graceful Degradation
+
+Speaker identification is designed to never block transcription:
+
+- If Python dependencies are missing, transcription continues with generic labels
+- If no profiles are enrolled, generic labels are used
+- If matching fails or times out, generic labels are used
+- Errors are logged but don't interrupt processing
+
+### Example Output
+
+**Without Speaker Identification:**
+```
+[00:00.500 - 00:05.234] Speaker 0: Hey, how's the project going?
+[00:05.500 - 00:12.100] Speaker 1: It's going well, we just finished the first milestone.
+```
+
+**With Speaker Identification:**
+```
+[00:00.500 - 00:05.234] Jared: Hey, how's the project going?
+[00:05.500 - 00:12.100] Sarah: It's going well, we just finished the first milestone.
 ```
 
 ## 🧩 Advanced Configuration Options
@@ -555,6 +715,60 @@ Speaker 0: Maybe we could use a microservices approach. What do you think?
 - **Higher threshold (e.g., 1.2s)**: Longer segments, fewer breaks
 - **Lower max words (e.g., 30)**: Forces shorter segments for rapid speech
 - **Higher max words (e.g., 75)**: Allows longer thoughts to stay together
+
+## 🔇 Silence Detection & Preview
+
+The system includes silence detection capabilities using FFmpeg's `silencedetect` filter. This allows you to analyze audio files for silent sections before processing.
+
+### Silence Preview Command
+
+Preview what silence would be removed without modifying the file:
+
+```bash
+node summarai.mjs --silence-preview /path/to/audio.mp3
+```
+
+### Example Output
+
+```
+Silence Preview for: voice_memo.mp3
+Settings: threshold=-25dB, min duration=0.5s
+
+  1. Would remove 3.62s from 0.19s to 3.81s
+  2. Would remove 5.35s from 21.05s to 26.40s
+  3. Would remove 43.53s from 7m 20.44s to 8m 3.97s
+
+Total silence to remove: 52.50s across 3 sections
+```
+
+### Configuration
+
+Configure silence detection thresholds in `config.yaml`:
+
+```yaml
+audio:
+  processing:
+    silenceRemoval:
+      enabled: true        # Enable/disable silence removal during processing
+      threshold: -25       # dB level for silence detection
+      duration: 0.5        # Minimum silence duration in seconds
+```
+
+### Threshold Reference
+
+| Value | Behavior |
+|-------|----------|
+| `-25dB` | Very conservative - only true silence (recommended) |
+| `-35dB` | Conservative - removes quiet sections |
+| `-45dB` | Moderate - may catch soft speech |
+| `-55dB` | Aggressive - will likely clip content |
+
+### Use Cases
+
+- **Analyze recordings** before processing to understand silence distribution
+- **Tune thresholds** by testing different values without modifying files
+- **Identify dead air** at the end of recordings (common in voice memos)
+- **Estimate compression** potential from silence removal
 
 ## 🔧 Troubleshooting
 
@@ -764,7 +978,14 @@ The system includes comprehensive security measures:
 
 ## 📝 Recent Updates
 
-### v2.2.4 (Current)
+### v2.2.5 (Current)
+- **Speaker Identification**: New Pyannote-based speaker identification to replace generic "Speaker 0/1" with actual names
+- **Voice Profile Enrollment**: CLI commands to enroll, list, and delete speaker profiles
+- **Automatic Speaker Matching**: Transcripts automatically use enrolled speaker names when confidence threshold is met
+- **Graceful Fallback**: Speaker ID failures never block transcription - falls back to generic labels
+- **Claude Opus 4.5**: Support for latest Claude Opus 4.5 model
+
+### v2.2.4
 - **Persistent Failure Tracking**: Failed files logged to NDJSON with automatic recovery on startup
 - **Auto-Recovery System**: Orphaned lock file cleanup and failed file queue restoration
 - **Claude Sonnet 4.5**: Upgraded to latest model (`claude-sonnet-4-5-20250929`) for improved summarization

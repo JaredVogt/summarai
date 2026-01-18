@@ -73,6 +73,28 @@ export class FileSystemError extends AppError {
 }
 
 /**
+ * Speaker identification errors
+ */
+export class SpeakerIdentificationError extends AppError {
+  constructor(message, details = {}) {
+    super(message, 'SPEAKER_ID_ERROR', details);
+    this.name = 'SpeakerIdentificationError';
+  }
+}
+
+/**
+ * Python environment errors (missing Python, dependencies, etc.)
+ */
+export class PythonEnvironmentError extends AppError {
+  constructor(message, details = {}) {
+    super(message, 'PYTHON_ENV_ERROR', details);
+    this.name = 'PythonEnvironmentError';
+    // Python environment errors are operational - the user can fix them
+    this.isOperational = true;
+  }
+}
+
+/**
  * Error severity levels
  */
 export const ErrorSeverity = {
@@ -109,7 +131,17 @@ export function getErrorSeverity(error, context = '') {
   if (error instanceof ProcessingError) {
     return ErrorSeverity.MEDIUM;
   }
-  
+
+  // Speaker identification errors are low severity - they don't block transcription
+  if (error instanceof SpeakerIdentificationError) {
+    return ErrorSeverity.LOW;
+  }
+
+  // Python environment errors are medium - user needs to know but can continue
+  if (error instanceof PythonEnvironmentError) {
+    return ErrorSeverity.MEDIUM;
+  }
+
   // Default to medium for unknown errors
   return ErrorSeverity.MEDIUM;
 }

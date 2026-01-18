@@ -6,6 +6,7 @@ import { retryWithBackoff, defaultShouldRetry } from './retryUtils.mjs';
 import { loadConfig, getConfigValue } from './configLoader.mjs';
 import logger, { LogCategory, LogStatus } from './src/logger.mjs';
 import { checkAndLogSubscription } from './elevenLabsMonitor.mjs';
+import { identifySpeakersWithFallback } from './speakerIdentification.mjs';
 
 // Don't read the API key at import time, will access process.env directly when needed
 
@@ -191,10 +192,10 @@ export async function transcribeWithScribe(audioFilePath, options = {}) {
     }, retryOptions);
     
     stopSpinner();
-    
-    // Process and format the result
-    const formattedResult = formatScribeResult(result, verbose);
-    
+
+    // Process and format the result (now async for speaker identification)
+    const formattedResult = await formatScribeResult(result, verbose, audioFilePath);
+
     return formattedResult;
 
   } catch (err) {
@@ -212,9 +213,10 @@ export async function transcribeWithScribe(audioFilePath, options = {}) {
  * Format the Scribe API result to match our application needs
  * @param {Object} result - Original API response from ElevenLabs SDK
  * @param {boolean} verbose - Whether to include detailed data
- * @returns {Object} - Formatted result
+ * @param {string} audioFilePath - Path to the original audio file (for speaker identification)
+ * @returns {Promise<Object>} - Formatted result
  */
-function formatScribeResult(result, verbose = false) {
+async function formatScribeResult(result, verbose = false, audioFilePath = null) {
   // Extract the plain text (different path with the SDK)
   const rawText = result.transcription || result.text || '';
   // Clean up extra spaces
@@ -225,6 +227,35 @@ function formatScribeResult(result, verbose = false) {
 
   // Use sentence-based segmentation instead of speaker-based
   const segments = createSentenceSegments(words);
+
+  // Apply speaker identification if enabled and audio path is available
+  const speakerIdEnabled = getConfigValue(config, 'speakerIdentification.enabled', false);
+
+  if (speakerIdEnabled && audioFilePath && segments.length > 0) {
+    try {
+      // Get speaker mapping from Pyannote
+      const speakerMapping = await identifySpeakersWithFallback(audioFilePath, segments, {
+        threshold: getConfigValue(config, 'speakerIdentification.threshold', 0.70)
+      });
+
+      // Apply speaker names to segments
+      if (speakerMapping && Object.keys(speakerMapping).length > 0) {
+        segments.forEach(segment => {
+          // Convert "Speaker 0" to "speaker_0" for lookup
+          const speakerId = segment.speaker.replace('Speaker ', 'speaker_');
+          const identifiedName = speakerMapping[speakerId];
+
+          // Only update if we got a match (null means no match, keep generic)
+          if (identifiedName) {
+            segment.speaker = identifiedName;
+          }
+        });
+      }
+    } catch (error) {
+      // Speaker identification errors should never block transcription
+      logger.warn(LogCategory.PROCESSING, `Speaker identification skipped: ${error.message}`);
+    }
+  }
 
   // Create a formatted result compatible with our application
   const formatted = {

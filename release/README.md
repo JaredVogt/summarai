@@ -69,6 +69,33 @@ When running this executable for the first time, macOS will show a security warn
 - `--dry-run` - Preview what would be processed without actually processing
 - `--help` - Show detailed help
 
+### Speaker Identification Setup (Optional)
+
+To enable automatic speaker naming (replace "Speaker 0/1" with actual names):
+
+```bash
+# 1. Create Python virtual environment and install dependencies
+cd pyannote
+python3 -m venv .venv
+source .venv/bin/activate
+pip3 install -r requirements.txt
+
+# 2. Add HuggingFace token to ~/.env
+# Get token at: https://huggingface.co/settings/tokens
+# Accept model terms at: https://huggingface.co/pyannote/embedding
+echo "HUGGINGFACE_TOKEN=your_token_here" >> ~/.env
+
+# 3. Enable in config.yaml
+# Set speakerIdentification.enabled: true
+```
+
+Speaker commands:
+```bash
+./summarai speaker check              # Verify setup
+./summarai speaker enroll "Name" file.wav  # Add speaker
+./summarai speaker list               # List enrolled speakers
+```
+
 ## File Processing
 
 The executable watches two directories:
@@ -117,9 +144,9 @@ Contains domain-specific terms and terminology that helps both transcription ser
 - Ensure directories exist and have read/write permissions
 
 ## Version Info
-- Version: 2.2.4
-- Build Date: 2025-10-30
-- Build Time: 2025-10-30T22:48:50.441Z
+- Version: 2.3.0
+- Build Date: 2025-12-22
+- Build Time: 2025-12-22T06:40:00.217Z
 - Platform: macOS ARM64 (Apple Silicon)
 - Runtime: Bun (embedded)
 
