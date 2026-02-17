@@ -58,6 +58,20 @@ try {
 const OUTPUT_DIR = getConfigValue(config, 'directories.output', './output');
 
 /**
+ * Get the timezone offset string for a given date
+ * Returns format like "+05:30", "-07:00", etc.
+ * @param {Date} date - Date to get offset for (defaults to current date)
+ * @returns {string} - Timezone offset string in ISO 8601 format
+ */
+function getTimezoneOffset(date = new Date()) {
+  const offset = -date.getTimezoneOffset(); // getTimezoneOffset returns inverse sign
+  const hours = Math.floor(Math.abs(offset) / 60);
+  const minutes = Math.abs(offset) % 60;
+  const sign = offset >= 0 ? '+' : '-';
+  return `${sign}${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+}
+
+/**
  * Generate a unique temp directory path in system temp
  * Avoids Google Drive sync/permission issues by always using local temp
  * @param {string} filePath - Original file path for naming context
@@ -324,7 +338,7 @@ export async function processVoiceMemo(filePath, options = {}) {
     if (extracted) {
       const { year, month, day, hour, min, sec } = extracted;
       recordingDateTimePrefix = `${year}${month}${day}_${hour}${min}${sec}`;
-      recordingDateTime = `${year}-${month}-${day}T${hour}:${min}:${sec}-07:00`;
+      recordingDateTime = `${year}-${month}-${day}T${hour}:${min}:${sec}${getTimezoneOffset()}`;
     } else {
       // For files without timestamp in name, get the current time
       console.log('No datetime pattern found in filename, using current time');
@@ -485,14 +499,14 @@ export async function processVoiceMemo(filePath, options = {}) {
     // Pass the original filePath for metadata, but tempAACPath for copying the actual file
     const { finalName, targetDir, mdFilePath } = await sendToClaude(transcript, filePath, recordingDateTimePrefix, recordingDateTime, outputPath || OUTPUT_DIR, originalFileName, tempAACPath);
     
-    // Write segments to a file (only if enabled by config or override)
+    // Write segments to a separate file (only if enabled by config or override)
     if (shouldCreateSegmentsFile) {
       const segmentsFile = path.join(targetDir, `${finalName}_segments.txt`);
       fs.writeFileSync(segmentsFile, segmentsContent);
       console.log(`Segments with timestamps written to: ${segmentsFile}`);
     }
-    
-    // Append segments to the markdown file
+
+    // Always append segments to the markdown file
     if (mdFilePath && fs.existsSync(mdFilePath)) {
       fs.appendFileSync(mdFilePath, '\n\n' + segmentsContent);
       console.log(`Timestamps appended to markdown file: ${mdFilePath}`);
@@ -615,6 +629,7 @@ export async function processVoiceMemo(filePath, options = {}) {
  * @param {string} [options.transcriptionService='scribe'] - Transcription service
  * @param {string} [options.outputPath] - Custom output directory
  * @param {boolean} [options.silentMode=false] - Skip interactive prompts
+ * @param {boolean} [options.createSegmentsFile=null] - Create segments file and append to markdown
  * @returns {Promise<Object>} - Result with finalName, targetDir, mdFilePath
  */
 export async function processYouTubeUrl(url, options = {}) {
@@ -624,8 +639,13 @@ export async function processYouTubeUrl(url, options = {}) {
     outputPath = null,
     silentMode = false,
     model = null,
-    maxSpeakers = null
+    maxSpeakers = null,
+    createSegmentsFile = null
   } = options;
+
+  // Get the global setting from config, with fallback to true for backward compatibility
+  const globalCreateSegmentsFile = getConfigValue(config, 'fileProcessing.output.createSegmentsFile', true);
+  const shouldCreateSegmentsFile = createSegmentsFile !== null ? createSegmentsFile : globalCreateSegmentsFile;
 
   let tempDir = null;
   let usedTemp = false;
