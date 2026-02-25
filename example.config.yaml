@@ -186,7 +186,8 @@ api:
 # Claude API Configuration
 # Used for summarizing transcriptions
 claude:
-  model: claude-3-5-sonnet-20241022  # Claude model to use
+  model: opus                        # Tier shorthand: "opus", "sonnet", "haiku" (auto-resolves to latest)
+  # model: claude-opus-4-20250514   # Or pin a specific model ID
   maxTokens: 1500                    # Maximum tokens in response
   temperature: 0.3                   # Creativity level (0-1, lower = more consistent)
   # System prompt for Claude

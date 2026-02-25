@@ -11,117 +11,63 @@ const getCacheFilePath = () => {
   const isExecutable = typeof Bun !== 'undefined' && process.argv[0]?.includes('summari');
 
   if (isExecutable) {
-    // For Bun executables, use the current working directory or temp directory
     const cacheDir = process.env.XDG_CACHE_HOME ||
                      path.join(process.env.HOME || process.env.USERPROFILE || '/tmp', '.cache');
     return path.join(cacheDir, 'summarai-model-cache.json');
   } else {
-    // For development, use the project directory
     return path.join(__dirname, '.model-cache.json');
   }
 };
 
 const CACHE_FILE = getCacheFilePath();
-const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
-const MODELS_URL = 'https://docs.anthropic.com/en/docs/about-claude/models/overview';
+const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+const MODELS_API_URL = 'https://api.anthropic.com/v1/models';
+
+// Hardcoded fallback when API is unreachable and no cache exists
+export const FALLBACK_MODEL = 'claude-opus-4-20250514';
 
 // Memory cache for Bun executables (VFS-compatible)
 let memoryCache = null;
 
 /**
- * Extract model information from the Anthropic docs HTML
- * @param {string} html - The HTML content
- * @returns {Object} - Object with latest model info
+ * Parse a model ID into family and date components.
+ * Generic — works with any Claude model naming convention.
+ * e.g., "claude-opus-4-20250514" → { family: "claude-opus-4", date: "20250514" }
+ * e.g., "claude-sonnet-4-5-20250929" → { family: "claude-sonnet-4-5", date: "20250929" }
+ * e.g., "claude-opus-4-6-20250925" → { family: "claude-opus-4-6", date: "20250925" }
  */
-function parseModelsFromHtml(html) {
-  const models = {
-    opus4: null,
-    opus45: null,
-    sonnet4: null,
-    sonnet45: null,
-    haiku4: null,
-    timestamp: Date.now()
-  };
+function parseModelId(modelId) {
+  const match = modelId.match(/^(claude-.+)-(\d{8})$/);
+  if (!match) return null;
+  return { family: match[1], date: match[2], id: modelId };
+}
 
-  try {
-    // Look for Opus 4 model identifier pattern
-    const opus4Pattern = /claude-opus-4-\d{8}/g;
-    const opus4Matches = html.match(opus4Pattern);
-    if (opus4Matches && opus4Matches.length > 0) {
-      // Get the most recent (assuming format is YYYYMMDD)
-      models.opus4 = opus4Matches.sort().reverse()[0];
-    }
-
-    // Look for Opus 4.5 model identifier pattern
-    const opus45Pattern = /claude-opus-4-5-\d{8}/g;
-    const opus45Matches = html.match(opus45Pattern);
-    if (opus45Matches && opus45Matches.length > 0) {
-      // Get the most recent (assuming format is YYYYMMDD)
-      models.opus45 = opus45Matches.sort().reverse()[0];
-    }
-
-    // Look for Sonnet 4.5 model identifier pattern
-    const sonnet45Pattern = /claude-sonnet-4-5-\d{8}/g;
-    const sonnet45Matches = html.match(sonnet45Pattern);
-    if (sonnet45Matches && sonnet45Matches.length > 0) {
-      // Get the most recent (assuming format is YYYYMMDD)
-      models.sonnet45 = sonnet45Matches.sort().reverse()[0];
-    }
-
-    // Look for Sonnet 4 model identifier pattern
-    const sonnet4Pattern = /claude-sonnet-4-\d{8}/g;
-    const sonnet4Matches = html.match(sonnet4Pattern);
-    if (sonnet4Matches && sonnet4Matches.length > 0) {
-      // Get the most recent (assuming format is YYYYMMDD)
-      models.sonnet4 = sonnet4Matches.sort().reverse()[0];
-    }
-
-    // Look for Haiku 4 model identifier pattern
-    const haiku4Pattern = /claude-haiku-4-\d{8}/g;
-    const haiku4Matches = html.match(haiku4Pattern);
-    if (haiku4Matches && haiku4Matches.length > 0) {
-      // Get the most recent (assuming format is YYYYMMDD)
-      models.haiku4 = haiku4Matches.sort().reverse()[0];
-    }
-
-    // Also check for any alias patterns like claude-opus-4-0
-    const opus4AliasPattern = /claude-opus-4-0/g;
-    if (!models.opus4 && opus4AliasPattern.test(html)) {
-      models.opus4Alias = 'claude-opus-4-0';
-    }
-
-    const sonnet4AliasPattern = /claude-sonnet-4-0/g;
-    if (!models.sonnet4 && sonnet4AliasPattern.test(html)) {
-      models.sonnet4Alias = 'claude-sonnet-4-0';
-    }
-
-  } catch (error) {
-    console.error('[ModelChecker] Error parsing models from HTML:', error.message);
-  }
-
-  return models;
+/**
+ * Extract the tier (opus, sonnet, haiku) from a model family or ID.
+ * Works for any current or future version number.
+ */
+function getTier(familyOrId) {
+  const match = familyOrId.match(/^claude-(opus|sonnet|haiku)/);
+  return match ? match[1] : null;
 }
 
 /**
  * Load cached model data (VFS-compatible)
- * @returns {Object|null} - Cached data or null if expired/not found
  */
 function loadCache() {
   const isExecutable = typeof Bun !== 'undefined' && process.argv[0]?.includes('summari');
 
   if (isExecutable) {
-    // Use memory cache for Bun executables (VFS limitation workaround)
-    if (memoryCache && (Date.now() - memoryCache.timestamp < CACHE_DURATION)) {
+    if (memoryCache && memoryCache.families && (Date.now() - memoryCache.timestamp < CACHE_DURATION)) {
       return memoryCache;
     }
     return null;
   } else {
-    // Use file cache for development
     try {
       if (fs.existsSync(CACHE_FILE)) {
         const data = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-        // Check if cache is still valid
-        if (Date.now() - data.timestamp < CACHE_DURATION) {
+        // Require new cache format with 'families' key
+        if (data.families && (Date.now() - data.timestamp < CACHE_DURATION)) {
           return data;
         }
       }
@@ -134,200 +80,227 @@ function loadCache() {
 
 /**
  * Save model data to cache (VFS-compatible)
- * @param {Object} data - Model data to cache
  */
 function saveCache(data) {
   const isExecutable = typeof Bun !== 'undefined' && process.argv[0]?.includes('summari');
 
   if (isExecutable) {
-    // Store in memory for Bun executables (VFS limitation workaround)
     memoryCache = data;
+  }
 
-    // Also try to save to filesystem cache if possible
-    try {
-      const cacheDir = path.dirname(CACHE_FILE);
-      if (!fs.existsSync(cacheDir)) {
-        fs.mkdirSync(cacheDir, { recursive: true });
-      }
-      fs.writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2));
-    } catch (error) {
-      // Silently fail for executables - memory cache is the primary method
-      // Use console.warn here since logger might not be available during cache operations
-      console.warn('[ModelChecker] Cache save failed:', error.message);
+  // Always try to save to filesystem
+  try {
+    const cacheDir = path.dirname(CACHE_FILE);
+    if (!fs.existsSync(cacheDir)) {
+      fs.mkdirSync(cacheDir, { recursive: true });
     }
-  } else {
-    // Store in file for development
-    try {
-      const cacheDir = path.dirname(CACHE_FILE);
-      if (!fs.existsSync(cacheDir)) {
-        fs.mkdirSync(cacheDir, { recursive: true });
-      }
-      fs.writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2));
-    } catch (error) {
-      // Use console.warn here since logger might not be available during cache operations
-      console.warn('[ModelChecker] Cache save failed:', error.message);
-    }
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2));
+  } catch (error) {
+    console.warn('[ModelChecker] Cache save failed:', error.message);
   }
 }
 
 /**
- * Fetch latest Claude models from Anthropic docs
- * @param {boolean} forceRefresh - Force refresh ignoring cache
- * @returns {Promise<Object>} - Object with latest model info
+ * Fetch all available models from the Anthropic API (paginated)
  */
-export async function fetchLatestModels(forceRefresh = false) {
-  // Check cache first
-  if (!forceRefresh) {
-    const cached = loadCache();
-    if (cached) {
-      return cached;
+async function fetchModelsFromApi() {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+
+  const allModels = [];
+  let afterId = undefined;
+
+  do {
+    const params = { limit: 100 };
+    if (afterId) params.after_id = afterId;
+
+    const response = await axios.get(MODELS_API_URL, {
+      params,
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      timeout: 10000
+    });
+
+    if (response.data?.data) {
+      allModels.push(...response.data.data);
+    }
+
+    if (response.data?.has_more && response.data?.last_id) {
+      afterId = response.data.last_id;
+    } else {
+      break;
+    }
+  } while (true);
+
+  return allModels;
+}
+
+/**
+ * Build a map of { family → latest model info } from the raw API model list.
+ * Completely generic — new model families are discovered automatically.
+ */
+function buildFamilyMap(apiModels) {
+  const families = {};
+
+  for (const model of apiModels) {
+    const parsed = parseModelId(model.id);
+    if (!parsed) continue;
+
+    // Only track if we recognize the tier (opus, sonnet, haiku)
+    if (!getTier(parsed.family)) continue;
+
+    if (!families[parsed.family] || parsed.date > families[parsed.family].date) {
+      families[parsed.family] = {
+        ...parsed,
+        displayName: model.display_name || model.id,
+        createdAt: model.created_at
+      };
     }
   }
 
+  return families;
+}
+
+/**
+ * Fetch latest models with caching.
+ * Uses the Anthropic /v1/models API — no HTML scraping.
+ */
+export async function fetchLatestModels(forceRefresh = false) {
+  if (!forceRefresh) {
+    const cached = loadCache();
+    if (cached) return cached;
+  }
+
   try {
-    // Import logger here to avoid circular dependencies
     const { default: logger, LogCategory } = await import('./src/logger.mjs');
-    logger.debug(LogCategory.MODEL, 'Checking for latest Claude models...');
+    logger.debug(LogCategory.MODEL, 'Fetching available models from Anthropic API...');
 
-    const response = await axios.get(MODELS_URL, {
-      timeout: 10000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-      }
-    });
+    const apiModels = await fetchModelsFromApi();
+    if (!apiModels) {
+      logger.warn(LogCategory.MODEL, 'No API key available for model lookup');
+      return loadCache() || { families: {}, timestamp: Date.now() };
+    }
 
-    const models = parseModelsFromHtml(response.data);
-    
-    // Save to cache
-    saveCache(models);
-    
-    return models;
+    const families = buildFamilyMap(apiModels);
+    const result = { families, timestamp: Date.now() };
+    saveCache(result);
+    return result;
   } catch (error) {
-    // Import logger here to avoid circular dependencies
     const { default: logger, LogCategory } = await import('./src/logger.mjs');
     logger.warn(LogCategory.MODEL, `Error fetching models: ${error.message}`);
-    // Return cached data if available, even if expired
     const cached = loadCache();
     if (cached) {
       logger.warn(LogCategory.MODEL, 'Using expired cache due to fetch error');
       return cached;
     }
-    // Return empty models if no cache
-    return {
-      opus4: null,
-      opus45: null,
-      sonnet4: null,
-      sonnet45: null,
-      haiku4: null,
-      timestamp: Date.now()
-    };
+    return { families: {}, timestamp: Date.now() };
   }
 }
 
 /**
- * Check if a newer model is available
- * @param {string} currentModel - Currently used model identifier
- * @param {boolean} silent - If true, don't log to console
- * @returns {Promise<Object>} - Object with comparison results
+ * Resolve a model shorthand or full ID to a specific model ID.
+ * Supports tier shorthands: "opus", "sonnet", "haiku" → latest model of that tier.
+ * Full model IDs (e.g., "claude-opus-4-20250514") are returned as-is.
+ */
+export async function resolveModel(modelConfig) {
+  if (!modelConfig) return null;
+
+  const tierName = modelConfig.toLowerCase();
+  const tiers = ['opus', 'sonnet', 'haiku'];
+
+  if (!tiers.includes(tierName)) {
+    // Full model ID — return as-is
+    return modelConfig;
+  }
+
+  // Resolve shorthand to the latest model of that tier
+  const data = await fetchLatestModels();
+  const families = data.families || {};
+
+  let best = null;
+  for (const info of Object.values(families)) {
+    if (getTier(info.family) === tierName) {
+      if (!best || info.date > best.date || (info.date === best.date && info.id > best.id)) {
+        best = info;
+      }
+    }
+  }
+
+  return best?.id || null;
+}
+
+/**
+ * Check if a newer model is available in the same tier.
+ * Only logs when a newer model is found — no noise when up to date.
  */
 export async function checkForNewerModels(currentModel, silent = false) {
-  const models = await fetchLatestModels();
+  const data = await fetchLatestModels();
+  const families = data.families || {};
   const results = {
     currentModel,
     hasNewer: false,
     newerModels: []
   };
 
-  // Extract model type and date from current model
-  // Support Opus 4, Opus 4.5, Sonnet 4, and Sonnet 4.5 formats
-  // Model formats: claude-opus-4-YYYYMMDD, claude-opus-4-5-YYYYMMDD, etc.
-  const modelMatch = currentModel.match(/(claude-(?:opus|sonnet)-4(?:-5)?)-(\d{8})/);
-  if (!modelMatch) {
+  const parsed = parseModelId(currentModel);
+  if (!parsed) {
     if (!silent) {
-      // Import logger here to avoid circular dependencies
       const { default: logger, LogCategory } = await import('./src/logger.mjs');
-      logger.warn(LogCategory.MODEL, 'Unable to parse current model format');
+      logger.warn(LogCategory.MODEL, `Unable to parse model format: ${currentModel}`);
     }
     return results;
   }
 
-  const [_, modelType, currentDate] = modelMatch;
+  const currentTier = getTier(parsed.family);
+  if (!currentTier) return results;
 
-  // Check if newer version exists based on model type
-  // modelType will be: claude-opus-4, claude-opus-4-5, claude-sonnet-4, claude-sonnet-4-5
-  let latestModel = null;
-  let modelTypeKey = null;
-
-  if (modelType === 'claude-opus-4') {
-    latestModel = models.opus4;
-    modelTypeKey = 'opus4';
-  } else if (modelType === 'claude-opus-4-5') {
-    latestModel = models.opus45;
-    modelTypeKey = 'opus45';
-  } else if (modelType === 'claude-sonnet-4-5') {
-    latestModel = models.sonnet45;
-    modelTypeKey = 'sonnet45';
-  } else if (modelType === 'claude-sonnet-4') {
-    latestModel = models.sonnet4;
-    modelTypeKey = 'sonnet4';
-  }
-
-  if (latestModel) {
-    const latestDate = latestModel.match(/\d{8}/)?.[0];
-    if (latestDate && latestDate > currentDate) {
-      results.hasNewer = true;
-      results.newerModels.push({
-        type: modelTypeKey,
-        current: currentModel,
-        latest: latestModel
-      });
+  // Find the absolute latest model in the same tier (across all families)
+  let tierBest = null;
+  for (const info of Object.values(families)) {
+    if (getTier(info.family) === currentTier) {
+      if (!tierBest || info.date > tierBest.date || (info.date === tierBest.date && info.id > tierBest.id)) {
+        tierBest = info;
+      }
     }
   }
 
-  // Import logger here to avoid circular dependencies
-  const { default: logger, LogCategory } = await import('./src/logger.mjs');
-
-  // Log findings if not silent
-  if (!silent && results.hasNewer) {
-    logger.info(LogCategory.MODEL, 'Newer Claude models available:');
-    results.newerModels.forEach(model => {
-      logger.info(LogCategory.MODEL, `- ${model.latest} (currently using: ${model.current})`);
+  if (tierBest && tierBest.id !== currentModel) {
+    results.hasNewer = true;
+    results.newerModels.push({
+      current: currentModel,
+      latest: tierBest.id
     });
-    logger.info(LogCategory.MODEL, 'To update, modify the model in claudeAPI.mjs');
-  } else if (!silent && !results.hasNewer) {
-    logger.info(LogCategory.MODEL, 'You are using the latest available model');
-  }
 
-  // Also show other available models if different type
-  if (!silent && models.opus45 && !currentModel.includes('opus-4-5')) {
-    logger.info(LogCategory.MODEL, `Opus 4.5 available: ${models.opus45}`);
-  }
-  if (!silent && models.opus4 && !currentModel.includes('claude-opus-4-') && !currentModel.includes('opus-4-5')) {
-    logger.info(LogCategory.MODEL, `Opus 4 available: ${models.opus4}`);
-  }
-  if (!silent && models.sonnet45 && !currentModel.includes('sonnet-4-5')) {
-    logger.info(LogCategory.MODEL, `Sonnet 4.5 available: ${models.sonnet45}`);
-  }
-  if (!silent && models.sonnet4 && !currentModel.includes('claude-sonnet-4-') && !currentModel.includes('sonnet-4-5')) {
-    logger.info(LogCategory.MODEL, `Sonnet 4 available: ${models.sonnet4}`);
+    if (!silent) {
+      const { default: logger, LogCategory } = await import('./src/logger.mjs');
+      logger.info(LogCategory.MODEL, `Newer ${currentTier} model available: ${tierBest.id}`);
+      logger.info(LogCategory.MODEL, `Set claude.model to "${currentTier}" in config.yaml for auto-latest`);
+    }
   }
 
   return results;
 }
 
-// Allow running directly for testing (but not when imported by other modules)
+// Allow running directly for testing
 if (import.meta.url === `file://${process.argv[1]}` &&
     !process.argv[1]?.includes('summarai') &&
     !process.argv[1]?.includes('release/summarai')) {
-  const testModel = process.argv[2] || 'claude-opus-4-20250514';
-  // Use console.log for direct testing since this is a standalone script
-  console.log(`Testing with model: ${testModel}\n`);
+  const testInput = process.argv[2] || 'opus';
+  console.log(`Testing with input: ${testInput}\n`);
 
-  checkForNewerModels(testModel)
-    .then(results => {
-      console.log('\nResults:', JSON.stringify(results, null, 2));
-    })
-    .catch(error => {
+  (async () => {
+    try {
+      const resolved = await resolveModel(testInput);
+      console.log(`Resolved: ${resolved}\n`);
+
+      if (resolved) {
+        const results = await checkForNewerModels(resolved);
+        console.log('\nResults:', JSON.stringify(results, null, 2));
+      }
+    } catch (error) {
       console.error('Error:', error.message);
-    });
+    }
+  })();
 }

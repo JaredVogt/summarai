@@ -39,30 +39,62 @@ function readLegacyArray(pathCandidate) {
   } catch { return null; }
 }
 
+/**
+ * Search watch directories for a file by name
+ * @param {string} filename - The filename to search for
+ * @param {Object} config - The config object containing watch directories
+ * @returns {string|null} - Full path if found, null otherwise
+ */
+function findFileInWatchDirs(filename, config) {
+  if (!filename || !config) return null;
+
+  // Get watch directories from config
+  const watchDirs = getConfigValue(config, 'directories.watch', {});
+  if (!watchDirs || typeof watchDirs !== 'object') return null;
+
+  for (const [, dirConfig] of Object.entries(watchDirs)) {
+    if (!dirConfig || !dirConfig.path) continue;
+
+    // Resolve the path (could be relative)
+    const dirPath = path.isAbsolute(dirConfig.path)
+      ? dirConfig.path
+      : path.resolve(process.cwd(), dirConfig.path);
+
+    // Check if file exists in this directory
+    const fullPath = path.join(dirPath, filename);
+    try {
+      if (fs.existsSync(fullPath)) {
+        return fullPath;
+      }
+    } catch {
+      // Skip directories we can't access
+    }
+  }
+
+  return null;
+}
+
 function migrateLegacyIfPresent(config) {
   const ndjsonPath = resolveHistoryPath(config);
   const legacyPath = resolveLegacyArrayPath(config);
   if (fs.existsSync(ndjsonPath)) return; // already migrated/created
-  // candidate legacy locations
-  const candidates = [
-    legacyPath,
-    path.resolve(process.cwd(), 'process_history.json'),
-    path.resolve(process.cwd(), 'output', 'process_history.json')
-  ];
-  let arr = null;
-  for (const c of candidates) {
-    arr = readLegacyArray(c);
-    if (arr) break;
-  }
+
+  // Only check for legacy file in the same directory as the NDJSON file
+  // This ensures test isolation and respects the configured location
+  const arr = readLegacyArray(legacyPath);
   if (!arr) return;
   ensureDir(ndjsonPath);
   const fh = fs.openSync(ndjsonPath, 'a');
   try {
     for (const item of arr) {
+      const filename = item.filename || null;
+      // Try to find the file in watch directories to backfill sourcePath
+      const sourcePath = filename ? findFileInWatchDirs(filename, config) : null;
+
       const rec = {
         processedAt: item.timestamp || new Date().toISOString(),
-        sourcePath: null,
-        sourceName: item.filename || null,
+        sourcePath: sourcePath,
+        sourceName: filename,
         destAudioPath: null,
         outputMdPath: null,
         service: null,
@@ -128,7 +160,7 @@ function loadIndex(config) {
   const ndjsonPath = resolveHistoryPath(config);
   const bySourceName = new Set();
   const bySourcePath = new Set();
-  const failedFiles = new Map(); // sourcePath -> { error, attemptNumber, lastAttemptAt }
+  const failedFiles = new Map(); // sourcePath or sourceName -> { error, attemptNumber, lastAttemptAt }
 
   if (!fs.existsSync(ndjsonPath)) return { bySourceName, bySourcePath, failedFiles };
 
@@ -139,23 +171,30 @@ function loadIndex(config) {
       if (!line.trim()) continue;
       try {
         const obj = JSON.parse(line);
-        if (!obj || !obj.sourcePath) continue;
+        // Accept records with either sourcePath OR sourceName
+        if (!obj || (!obj.sourcePath && !obj.sourceName)) continue;
 
         const status = obj.status || 'success'; // default for backward compatibility
+        // Use sourcePath as primary key, fall back to sourceName for legacy records
+        const recordKey = obj.sourcePath || obj.sourceName;
 
         if (status === 'success') {
           // Successfully processed - add to success Sets and remove from failures
           if (obj.sourceName) bySourceName.add(obj.sourceName);
-          bySourcePath.add(obj.sourcePath);
-          failedFiles.delete(obj.sourcePath);
+          if (obj.sourcePath) bySourcePath.add(obj.sourcePath);
+          failedFiles.delete(recordKey);
         } else if (status === 'failed') {
           // Failed - track in failedFiles Map (unless later succeeded)
-          if (!bySourcePath.has(obj.sourcePath)) {
-            failedFiles.set(obj.sourcePath, {
+          const isAlreadySuccessful = obj.sourcePath
+            ? bySourcePath.has(obj.sourcePath)
+            : bySourceName.has(obj.sourceName);
+
+          if (!isAlreadySuccessful) {
+            failedFiles.set(recordKey, {
               error: obj.error || null,
               attemptNumber: obj.attemptNumber || 1,
               lastAttemptAt: obj.processedAt || null,
-              sourceName: obj.sourceName || path.basename(obj.sourcePath)
+              sourceName: obj.sourceName || (obj.sourcePath ? path.basename(obj.sourcePath) : null)
             });
           }
         }
@@ -170,4 +209,4 @@ function loadIndex(config) {
   return { bySourceName, bySourcePath, failedFiles };
 }
 
-export { resolveHistoryPath, migrateLegacyIfPresent, appendRecord, appendFailureRecord, loadIndex };
+export { resolveHistoryPath, migrateLegacyIfPresent, appendRecord, appendFailureRecord, loadIndex, findFileInWatchDirs };

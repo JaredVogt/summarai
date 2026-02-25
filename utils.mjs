@@ -2,6 +2,8 @@
  * Utility functions for the voice memo processing application
  */
 
+import { sanitizeFilename as _sanitizeFilename } from './src/validation.mjs';
+
 /**
  * Creates a spinning animation in the console to indicate a long-running process
  * @param {string} message - The message to display alongside the spinner
@@ -22,9 +24,10 @@ export function startSpinner(message) {
 
 /**
  * Sanitizes a filename by removing invalid characters
+ * Delegates to the robust implementation in validation.mjs with 60 char limit
  * @param {string} name - The name to sanitize
  * @returns {string} - Sanitized filename
  */
 export function sanitizeFilename(name) {
-  return name.replace(/[^a-zA-Z0-9-_. ]/g, '').replace(/\s+/g, '_').substring(0, 60);
+  return _sanitizeFilename(name, { maxLength: 60 });
 }

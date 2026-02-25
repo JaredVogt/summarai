@@ -6,6 +6,10 @@
 import path from 'path';
 import fs from 'fs';
 
+// Import ValidationError for use within this module and re-export for consumers
+import { ValidationError } from './errors.mjs';
+export { ValidationError };
+
 /**
  * Validates and sanitizes file paths to prevent path traversal attacks
  * @param {string} filePath - The file path to validate
@@ -170,6 +174,62 @@ export function validateApiKeys(keys = {}) {
 }
 
 /**
+ * Validates only the API keys required for the current operation
+ * @param {Object} options - Options specifying which keys are required
+ * @param {string} options.transcriptionService - Transcription service: 'scribe' (default) or 'whisper'
+ * @param {boolean} options.summarization - Whether summarization is enabled (default: true)
+ * @throws {ValidationError} - If required keys are missing or invalid
+ * @returns {Object} - Object with missing and validated keys info
+ */
+export function validateRequiredApiKeys(options = {}) {
+  const {
+    transcriptionService = 'scribe',
+    summarization = true
+  } = options;
+
+  const required = [];
+
+  // Summarization requires Anthropic API key
+  if (summarization) {
+    required.push({ key: 'ANTHROPIC_API_KEY', minLength: 20, service: 'Claude (summarization)' });
+  }
+
+  // Transcription service determines which key is needed
+  if (transcriptionService === 'scribe') {
+    required.push({ key: 'ELEVENLABS_API_KEY', minLength: 20, service: 'ElevenLabs Scribe' });
+  } else if (transcriptionService === 'whisper') {
+    required.push({ key: 'OPENAI_API_KEY', minLength: 20, service: 'OpenAI Whisper' });
+  }
+
+  const missing = [];
+  const invalid = [];
+  const validated = [];
+
+  for (const { key, minLength, service } of required) {
+    const value = process.env[key];
+    if (!value) {
+      missing.push({ key, service });
+    } else if (value.length < minLength) {
+      invalid.push({ key, service, reason: 'too short' });
+    } else {
+      validated.push({ key, service });
+    }
+  }
+
+  if (missing.length > 0) {
+    const missingList = missing.map(m => `${m.key} (for ${m.service})`).join(', ');
+    throw new ValidationError(`Missing required API keys: ${missingList}`, 'apiKeys');
+  }
+
+  if (invalid.length > 0) {
+    const invalidList = invalid.map(i => `${i.key} (${i.reason})`).join(', ');
+    throw new ValidationError(`Invalid API keys: ${invalidList}`, 'apiKeys');
+  }
+
+  return { validated, missing, invalid };
+}
+
+/**
  * Validates command line arguments
  * @param {Array} args - Command line arguments
  * @returns {Object} - Parsed and validated arguments
@@ -204,34 +264,26 @@ export function validateCommandLineArgs(args = []) {
 }
 
 /**
- * Custom validation error class
- */
-export class ValidationError extends Error {
-  constructor(message, field) {
-    super(message);
-    this.name = 'ValidationError';
-    this.field = field;
-    this.timestamp = new Date().toISOString();
-  }
-}
-
-/**
  * Sanitizes filename for safe file system operations
  * @param {string} filename - Original filename
+ * @param {Object} options - Sanitization options
+ * @param {number} options.maxLength - Maximum filename length (default: 255)
  * @returns {string} - Sanitized filename
  */
-export function sanitizeFilename(filename) {
+export function sanitizeFilename(filename, options = {}) {
   if (!filename || typeof filename !== 'string') {
     throw new ValidationError('Invalid filename: must be a non-empty string', 'filename');
   }
-  
+
+  const { maxLength = 255 } = options;
+
   // Remove or replace dangerous characters
   return filename
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, '') // Remove invalid filename characters
     .replace(/^\.+/, '') // Remove leading dots
     .replace(/\.+$/, '') // Remove trailing dots
     .replace(/\s+/g, '_') // Replace spaces with underscores
-    .substring(0, 255); // Limit length
+    .substring(0, maxLength); // Limit length
 }
 
 /**

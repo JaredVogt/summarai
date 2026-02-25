@@ -473,6 +473,98 @@ try {
   process.exit(1);
 }
 
+// ============================================================================
+// Instance Lock - Prevent duplicate summarai instances
+// ============================================================================
+
+const LOCK_FILE_PATH = path.join(os.homedir(), '.config', 'summarai', '.summarai.lock');
+
+/**
+ * Check if a process is running and is actually summarai
+ * @param {number} pid - Process ID to check
+ * @returns {Promise<boolean>} - True if process is running and is summarai
+ */
+async function checkProcessRunning(pid) {
+  try {
+    // Check if process exists (signal 0 tests existence without sending a signal)
+    process.kill(pid, 0);
+
+    // Additional validation: check process name contains "summarai"
+    const { execSync } = await import('child_process');
+    const psOutput = execSync(`ps -p ${pid} -o command=`, { encoding: 'utf8' });
+    return psOutput.includes('summarai');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Clean up the lock file
+ * @param {string} lockFile - Path to the lock file
+ */
+function cleanupLock(lockFile) {
+  try {
+    fs.unlinkSync(lockFile);
+  } catch {
+    // Ignore errors - file may already be deleted
+  }
+}
+
+/**
+ * Check for existing summarai instance and create lock file
+ * Prevents duplicate instances from running simultaneously
+ */
+async function checkForExistingInstance() {
+  // Check if lock file exists
+  if (fs.existsSync(LOCK_FILE_PATH)) {
+    try {
+      const lockData = JSON.parse(fs.readFileSync(LOCK_FILE_PATH, 'utf8'));
+      const pid = lockData.pid;
+
+      // Verify process is actually running via ps
+      const isRunning = await checkProcessRunning(pid);
+      if (isRunning) {
+        logger.failure(LogCategory.SYSTEM, `Another summarai instance is already running (PID: ${pid})`);
+        logger.info(LogCategory.SYSTEM, `Started at: ${lockData.startedAt}`);
+        logger.info(LogCategory.SYSTEM, `To force start, delete: ${LOCK_FILE_PATH}`);
+        process.exit(1);
+      }
+      // Stale lock - remove it
+      logger.info(LogCategory.SYSTEM, `Removing stale lock file (PID ${pid} no longer running)`);
+      fs.unlinkSync(LOCK_FILE_PATH);
+    } catch (err) {
+      // If we can't parse the lock file, remove it
+      logger.warn(LogCategory.SYSTEM, `Invalid lock file, removing: ${err.message}`);
+      try {
+        fs.unlinkSync(LOCK_FILE_PATH);
+      } catch {
+        // Ignore
+      }
+    }
+  }
+
+  // Create lock file with our PID
+  const lockDir = path.dirname(LOCK_FILE_PATH);
+  if (!fs.existsSync(lockDir)) {
+    fs.mkdirSync(lockDir, { recursive: true });
+  }
+  fs.writeFileSync(LOCK_FILE_PATH, JSON.stringify({
+    pid: process.pid,
+    startedAt: new Date().toISOString()
+  }));
+
+  // Clean up on exit
+  process.on('exit', () => cleanupLock(LOCK_FILE_PATH));
+  process.on('SIGINT', () => {
+    cleanupLock(LOCK_FILE_PATH);
+    process.exit(0);
+  });
+  process.on('SIGTERM', () => {
+    cleanupLock(LOCK_FILE_PATH);
+    process.exit(0);
+  });
+}
+
 // Parse --process-recent-vm with optional date range
 let processRecentVmMode = false;
 let dateRangeValue = null;
@@ -530,8 +622,82 @@ const safeAudioExts = Array.isArray(AUDIO_EXTENSIONS) ? AUDIO_EXTENSIONS : ['.m4
 const safeVideoExts = Array.isArray(VIDEO_EXTENSIONS) ? VIDEO_EXTENSIONS : ['.mp4', '.mov'];
 const SUPPORTED_EXTENSIONS = [...safeAudioExts, ...safeVideoExts];
 
-// Track processed files to avoid duplicates
-const processed = new Set();
+/**
+ * TTL (Time To Live) Cache - like a Set but entries auto-expire after a specified time
+ * Prevents unbounded memory growth during long-running watch sessions
+ */
+class TTLCache {
+  /**
+   * @param {number} ttlMs - Time to live in milliseconds (default: 1 hour)
+   */
+  constructor(ttlMs = 3600000) {
+    this.ttlMs = ttlMs;
+    this.cache = new Map(); // key -> timestamp when added
+  }
+
+  /**
+   * Add a key to the cache with current timestamp
+   * @param {string} key - The key to add
+   */
+  add(key) {
+    this.cache.set(key, Date.now());
+    this.cleanup();
+  }
+
+  /**
+   * Check if a key exists and is not expired
+   * @param {string} key - The key to check
+   * @returns {boolean} - True if key exists and not expired
+   */
+  has(key) {
+    if (!this.cache.has(key)) return false;
+
+    const addedAt = this.cache.get(key);
+    const isExpired = Date.now() - addedAt > this.ttlMs;
+
+    if (isExpired) {
+      this.cache.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Delete a key from the cache
+   * @param {string} key - The key to delete
+   * @returns {boolean} - True if key was deleted
+   */
+  delete(key) {
+    return this.cache.delete(key);
+  }
+
+  /**
+   * Remove expired entries from the cache
+   * Called automatically on add() to keep memory bounded
+   */
+  cleanup() {
+    const now = Date.now();
+    for (const [key, addedAt] of this.cache) {
+      if (now - addedAt > this.ttlMs) {
+        this.cache.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Get the current size of the cache
+   * @returns {number} - Number of entries
+   */
+  get size() {
+    this.cleanup();
+    return this.cache.size;
+  }
+}
+
+// Track processed files to avoid duplicates (with TTL to prevent unbounded memory growth)
+// Default TTL is 1 hour, configurable via watch.queue.processedCacheTtlMs
+const processedCacheTtlMs = getConfigValue(config, 'watch.queue.processedCacheTtlMs', 3600000);
+const processed = new TTLCache(processedCacheTtlMs);
 
 // Processing queue to ensure sequential file processing
 const processingQueue = [];
@@ -1036,7 +1202,12 @@ function scheduleRetry(filePath, error) {
       }
     });
 
+    // Clean up retry tracking
     retryCount.delete(filePath);
+    if (retryTimeouts.has(filePath)) {
+      clearTimeout(retryTimeouts.get(filePath));
+      retryTimeouts.delete(filePath);
+    }
     return;
   }
 
@@ -1067,7 +1238,12 @@ function scheduleRetry(filePath, error) {
       }
     });
 
+    // Clean up retry tracking
     retryCount.delete(filePath);
+    if (retryTimeouts.has(filePath)) {
+      clearTimeout(retryTimeouts.get(filePath));
+      retryTimeouts.delete(filePath);
+    }
     return;
   }
 
@@ -1106,11 +1282,16 @@ async function processQueue() {
     try {
       // Process the file
       await processFile(filePath);
-      
-      // Success - clear any retry tracking
+
+      // Success - clear any retry tracking and pending timeouts
       if (retryCount.has(filePath)) {
         logger.success(LogCategory.QUEUE, `File ${path.basename(filePath)} processed successfully after ${currentAttempt + 1} attempts`);
         retryCount.delete(filePath);
+      }
+      // Clear any pending retry timeout to prevent duplicate processing
+      if (retryTimeouts.has(filePath)) {
+        clearTimeout(retryTimeouts.get(filePath));
+        retryTimeouts.delete(filePath);
       }
 
       // Configured delay between files
@@ -2001,6 +2182,10 @@ if (!isSpeakerMode) {
     logger.debug(LogCategory.SYSTEM, `Build: ${versionInfo.buildDate.replace(/"/g, '')} ${timeOnly}`);
   }
 
-  // Start the application
-  startWatching();
+  // Check for existing instance before starting (async IIFE)
+  (async () => {
+    await checkForExistingInstance();
+    // Start the application
+    startWatching();
+  })();
 }

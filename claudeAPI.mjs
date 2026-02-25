@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { startSpinner, sanitizeFilename } from './utils.mjs';
 import { retryWithBackoff, defaultShouldRetry } from './retryUtils.mjs';
-import { checkForNewerModels } from './modelChecker.mjs';
+import { resolveModel, checkForNewerModels, FALLBACK_MODEL } from './modelChecker.mjs';
 import logger, { LogCategory, LogStatus } from './src/logger.mjs';
 import { loadConfig, getConfigValue } from './configLoader.mjs';
 
@@ -250,20 +250,27 @@ export async function sendToClaude(transcript, filePath, recordingDateTimePrefix
       }
     };
 
-    // Model selection: prefer config value, fallback to a recent default
-    let currentModel = 'claude-opus-4-20250514';
+    // Model selection: supports tier shorthands (opus, sonnet, haiku) or full model IDs
+    // Default to "opus" which auto-resolves to the latest opus model via the API
+    let currentModel = FALLBACK_MODEL;
+    let usedShorthand = false;
     try {
-      const configuredModel = runtimeConfig ? getConfigValue(runtimeConfig, 'claude.model', null) : null;
-      if (configuredModel && typeof configuredModel === 'string') {
-        currentModel = configuredModel;
+      const rawConfig = runtimeConfig ? getConfigValue(runtimeConfig, 'claude.model', 'opus') : 'opus';
+      usedShorthand = ['opus', 'sonnet', 'haiku'].includes(rawConfig?.toLowerCase?.());
+      const resolved = await resolveModel(rawConfig);
+      if (resolved) {
+        currentModel = resolved;
       }
     } catch {}
 
-    // Check for newer models (non-blocking)
-    checkForNewerModels(currentModel).catch(err => {
-      // Don't let model checking errors interrupt the main flow
-      logger.warn(LogCategory.MODEL, `Error checking for newer models: ${err.message}`);
-    });
+    logger.info(LogCategory.MODEL, `Using model: ${currentModel}`);
+
+    // Check for newer models (non-blocking, only useful for pinned model IDs)
+    if (!usedShorthand) {
+      checkForNewerModels(currentModel).catch(err => {
+        logger.warn(LogCategory.MODEL, `Error checking for newer models: ${err.message}`);
+      });
+    }
 
     // Call Claude API with retry logic
     const response = await retryWithBackoff(async () => {

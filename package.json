@@ -13,6 +13,7 @@
     "build:minor": "bun run build-executable.mjs --increment --minor --minify",
     "build:major": "bun run build-executable.mjs --increment --major --minify",
     "release": "bun run build-executable.mjs --increment --patch --minify --zip",
+    "build:run": "bun run build && ./release/summarai",
     "test": "bun test",
     "test:security": "bun test tests/critical-fixes.test.mjs",
     "prebuild": "bun test",
